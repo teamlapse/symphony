@@ -133,6 +133,51 @@ defmodule SymphonyElixir.CoreTest do
     assert :ok = Config.validate!()
   end
 
+  test "linear project slug resolves from explicit env var reference" do
+    env_var = "SYMP_LINEAR_PROJECT_SLUG_#{System.unique_integer([:positive])}"
+    previous_value = System.get_env(env_var)
+    on_exit(fn -> restore_env(env_var, previous_value) end)
+    System.put_env(env_var, "lapse-project")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: "$#{env_var}"
+    )
+
+    assert Config.settings!().tracker.project_slug == "lapse-project"
+    assert :ok = Config.validate!()
+  end
+
+  test "review target branch resolves env references and normalizes origin refs" do
+    env_var = "SYMP_REVIEW_TARGET_BRANCH_#{System.unique_integer([:positive])}"
+    previous_value = System.get_env(env_var)
+    on_exit(fn -> restore_env(env_var, previous_value) end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      review_enabled: true,
+      review_target_branch: "$#{env_var}"
+    )
+
+    System.put_env(env_var, "refs/heads/release/2026")
+    assert Config.settings!().review.target_branch == "origin/release/2026"
+
+    System.put_env(env_var, "")
+    assert Config.settings!().review.target_branch == "origin/main"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      review_enabled: true,
+      review_target_branch: "refs/remotes/origin/hotfix"
+    )
+
+    assert Config.settings!().review.target_branch == "origin/hotfix"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      review_enabled: true,
+      review_target_branch: "   "
+    )
+
+    assert Config.settings!().review.target_branch == "origin/main"
+  end
+
   test "linear assignee resolves from LINEAR_ASSIGNEE env var" do
     previous_linear_assignee = System.get_env("LINEAR_ASSIGNEE")
     env_assignee = "dev@example.com"
@@ -1361,6 +1406,133 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 1) =~ "continuation turn #2 of 3"
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner feeds review findings back to the same executor before handoff" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-review-loop-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      executor_script = Path.join(test_root, "executor.sh")
+      reviewer_script = Path.join(test_root, "reviewer.sh")
+      trace_file = Path.join(test_root, "review-loop.trace")
+
+      File.mkdir_p!(test_root)
+      File.mkdir_p!(workspace_root)
+
+      File.write!(executor_script, """
+      #!/bin/sh
+      prompt="$(cat)"
+      printf 'EXECUTOR:%s\\n' "$prompt" >> "#{trace_file}"
+
+      case "$prompt" in
+        *"Internal agent review requested changes"*)
+          printf 'fixed\\n' > fixed.txt
+          ;;
+        *)
+          printf 'initial\\n' > implementation.txt
+          ;;
+      esac
+      """)
+
+      File.write!(reviewer_script, """
+      #!/bin/sh
+      _prompt="$(cat)"
+      printf 'REVIEWER\\n' >> "#{trace_file}"
+      mkdir -p .symphony/review
+
+      if [ -f fixed.txt ]; then
+        printf 'status: pass\\nNo findings after feedback.\\n' > .symphony/review/latest.md
+      else
+        printf 'status: changes_requested\\n- Add fixed.txt before handoff.\\n' > .symphony/review/latest.md
+      fi
+      """)
+
+      File.chmod!(executor_script, 0o755)
+      File.chmod!(reviewer_script, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        executor_agent: "executor",
+        agents: %{
+          "executor" => %{
+            kind: "exec",
+            command: executor_script,
+            prompt_mode: "stdin"
+          },
+          "reviewer" => %{
+            kind: "exec",
+            command: reviewer_script,
+            prompt_mode: "stdin"
+          }
+        },
+        review_enabled: true,
+        review_max_rounds: 2,
+        max_turns: 3
+      )
+
+      issue = %Issue{
+        id: "issue-review-loop",
+        identifier: "MT-REVIEW",
+        title: "Review before handoff",
+        description: "Exercise agent review loop",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-REVIEW",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(
+                 issue,
+                 self(),
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+               )
+
+      workspace = Path.join(workspace_root, "MT-REVIEW")
+      assert File.read!(Path.join(workspace, "implementation.txt")) == "initial\n"
+      assert File.read!(Path.join(workspace, "fixed.txt")) == "fixed\n"
+      assert File.read!(Path.join([workspace, ".symphony", "review", "latest.md"])) =~ "status: pass"
+
+      trace = File.read!(trace_file)
+      assert length(Regex.scan(~r/^EXECUTOR:/m, trace)) == 2
+      assert length(Regex.scan(~r/^REVIEWER$/m, trace)) == 2
+      assert trace =~ "Reviewer findings:"
+      assert trace =~ "Add fixed.txt before handoff."
+
+      assert_received {:codex_worker_update, "issue-review-loop",
+                       %{
+                         event: :agent_review_started,
+                         runtime_stage: "Agent Review",
+                         payload: %{round: 1, max_rounds: 2}
+                       }}
+
+      assert_received {:codex_worker_update, "issue-review-loop",
+                       %{
+                         event: :agent_review_completed,
+                         runtime_stage: nil,
+                         payload: %{round: 1, max_rounds: 2, status: "changes_requested"}
+                       }}
+
+      assert_received {:codex_worker_update, "issue-review-loop",
+                       %{
+                         event: :agent_review_feedback_started,
+                         runtime_stage: "Address Feedback",
+                         payload: %{turn: 2, max_turns: 3, review_round: 1}
+                       }}
+
+      assert_received {:codex_worker_update, "issue-review-loop",
+                       %{
+                         event: :agent_review_completed,
+                         runtime_stage: nil,
+                         payload: %{round: 2, max_rounds: 2, status: "pass"}
+                       }}
+    after
       File.rm_rf(test_root)
     end
   end

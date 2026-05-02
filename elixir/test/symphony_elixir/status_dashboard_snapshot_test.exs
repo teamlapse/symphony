@@ -11,7 +11,13 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
        %{
          running: [],
          retrying: [],
-         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         codex_totals: %{
+           input_tokens: 0,
+           cached_input_tokens: 0,
+           output_tokens: 0,
+           total_tokens: 0,
+           seconds_running: 0
+         },
          rate_limits: nil
        }}
 
@@ -36,7 +42,13 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
        %{
          running: [],
          retrying: [],
-         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         codex_totals: %{
+           input_tokens: 0,
+           cached_input_tokens: 0,
+           output_tokens: 0,
+           total_tokens: 0,
+           seconds_running: 0
+         },
          rate_limits: nil
        }}
 
@@ -50,6 +62,8 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
          running: [
            running_entry(%{
              identifier: "MT-101",
+             codex_input_tokens: 105_000,
+             codex_cached_input_tokens: 80_000,
              codex_total_tokens: 120_450,
              runtime_seconds: 785,
              turn_count: 11,
@@ -60,6 +74,8 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              identifier: "MT-102",
              session_id: "thread-abcdef1234567890",
              codex_app_server_pid: "5252",
+             codex_input_tokens: 78_000,
+             codex_cached_input_tokens: 60_000,
              codex_total_tokens: 89_200,
              runtime_seconds: 412,
              turn_count: 4,
@@ -70,6 +86,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
          retrying: [],
          codex_totals: %{
            input_tokens: 250_000,
+           cached_input_tokens: 180_000,
            output_tokens: 18_500,
            total_tokens: 268_500,
            seconds_running: 4_321
@@ -93,6 +110,8 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
            running_entry(%{
              identifier: "MT-638",
              state: "retrying",
+             codex_input_tokens: 12_000,
+             codex_cached_input_tokens: 9_000,
              codex_total_tokens: 14_200,
              runtime_seconds: 1_225,
              turn_count: 7,
@@ -126,7 +145,13 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              error: "fourth queued retry should also render after removing the top-three limit"
            })
          ],
-         codex_totals: %{input_tokens: 18_000, output_tokens: 2_200, total_tokens: 20_200, seconds_running: 2_700},
+         codex_totals: %{
+           input_tokens: 18_000,
+           cached_input_tokens: 12_500,
+           output_tokens: 2_200,
+           total_tokens: 20_200,
+           seconds_running: 2_700
+         },
          rate_limits: %{
            limit_id: "gpt-5",
            primary: %{remaining: 0, limit: 20_000, reset_in_seconds: 95},
@@ -151,7 +176,13 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              error: "error with \\nnewline"
            })
          ],
-         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         codex_totals: %{
+           input_tokens: 0,
+           cached_input_tokens: 0,
+           output_tokens: 0,
+           total_tokens: 0,
+           seconds_running: 0
+         },
          rate_limits: nil
        }}
 
@@ -174,15 +205,23 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
            running_entry(%{
              identifier: "MT-777",
              state: "running",
+             codex_input_tokens: 2_900,
+             codex_cached_input_tokens: 2_500,
              codex_total_tokens: 3_200,
              runtime_seconds: 75,
              turn_count: 7,
              last_codex_event: "codex/event/token_count",
-             last_codex_message: token_usage_message(90, 12, 102)
+             last_codex_message: token_usage_message(90, 64, 12, 102)
            })
          ],
          retrying: [],
-         codex_totals: %{input_tokens: 90, output_tokens: 12, total_tokens: 102, seconds_running: 75},
+         codex_totals: %{
+           input_tokens: 90,
+           cached_input_tokens: 64,
+           output_tokens: 12,
+           total_tokens: 102,
+           seconds_running: 75
+         },
          rate_limits: %{
            limit_id: "priority-tier",
            primary: %{remaining: 100, limit: 100, reset_in_seconds: 1},
@@ -205,6 +244,8 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
         state: "running",
         session_id: "thread-1234567890",
         codex_app_server_pid: "4242",
+        codex_input_tokens: 0,
+        codex_cached_input_tokens: 0,
         codex_total_tokens: 0,
         runtime_seconds: 0,
         turn_count: 1,
@@ -268,21 +309,30 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     }
   end
 
-  defp token_usage_message(input_tokens, output_tokens, total_tokens) do
+  defp token_usage_message(input_tokens, cached_input_tokens, output_tokens, total_tokens) do
+    total_usage =
+      %{
+        "inputTokens" => input_tokens,
+        "outputTokens" => output_tokens,
+        "totalTokens" => total_tokens
+      }
+      |> maybe_put_cached_input_tokens(cached_input_tokens)
+
     %{
       event: :notification,
       message: %{
         "method" => "thread/tokenUsage/updated",
         "params" => %{
           "tokenUsage" => %{
-            "total" => %{
-              "inputTokens" => input_tokens,
-              "outputTokens" => output_tokens,
-              "totalTokens" => total_tokens
-            }
+            "total" => total_usage
           }
         }
       }
     }
   end
+
+  defp maybe_put_cached_input_tokens(total_usage, nil), do: total_usage
+
+  defp maybe_put_cached_input_tokens(total_usage, cached_input_tokens),
+    do: Map.put(total_usage, "cachedInputTokens", cached_input_tokens)
 end

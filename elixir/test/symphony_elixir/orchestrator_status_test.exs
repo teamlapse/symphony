@@ -99,6 +99,27 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              message: %{method: "some-event"},
              timestamp: now
            }
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :agent_review_started,
+         payload: %{round: 1, max_rounds: 3},
+         runtime_stage: "Agent Review",
+         timestamp: now
+       }}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry.runtime_stage == "Agent Review"
+
+    row = StatusDashboard.format_running_summary_for_test(snapshot_entry)
+    plain = Regex.replace(~r/\e\[[\d;]*m/, row, "")
+
+    assert plain =~ "Agent Review"
+    assert plain =~ "agent review running (round 1/3)"
   end
 
   test "orchestrator snapshot tracks codex thread totals and app-server pid" do
@@ -172,7 +193,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            "method" => "thread/tokenUsage/updated",
            "params" => %{
              "tokenUsage" => %{
-               "total" => %{"inputTokens" => 12, "outputTokens" => 4, "totalTokens" => 16}
+               "total" => %{
+                 "inputTokens" => 12,
+                 "cachedInputTokens" => 9,
+                 "outputTokens" => 4,
+                 "totalTokens" => 16
+               }
              }
            }
          },
@@ -185,6 +211,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.codex_app_server_pid == "4242"
     assert snapshot_entry.codex_input_tokens == 12
+    assert snapshot_entry.codex_cached_input_tokens == 9
+    assert snapshot_entry.codex_uncached_input_tokens == 3
     assert snapshot_entry.codex_output_tokens == 4
     assert snapshot_entry.codex_total_tokens == 16
     assert snapshot_entry.turn_count == 1
@@ -194,6 +222,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     completed_state = :sys.get_state(pid)
 
     assert completed_state.codex_totals.input_tokens == 12
+    assert completed_state.codex_totals.cached_input_tokens == 9
+    assert completed_state.codex_totals.uncached_input_tokens == 3
     assert completed_state.codex_totals.output_tokens == 4
     assert completed_state.codex_totals.total_tokens == 16
     assert is_integer(completed_state.codex_totals.seconds_running)
@@ -255,7 +285,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          event: :turn_completed,
          payload: %{
            method: "turn/completed",
-           usage: %{"input_tokens" => "12", "output_tokens" => 4, "total_tokens" => 16}
+           usage: %{
+             "input_tokens" => "12",
+             "cached_input_tokens" => 9,
+             "output_tokens" => 4,
+             "total_tokens" => 16
+           }
          },
          timestamp: DateTime.utc_now()
        }}
@@ -264,12 +299,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.codex_input_tokens == 12
+    assert snapshot_entry.codex_cached_input_tokens == 9
+    assert snapshot_entry.codex_uncached_input_tokens == 3
     assert snapshot_entry.codex_output_tokens == 4
     assert snapshot_entry.codex_total_tokens == 16
 
     send(pid, {:DOWN, process_ref, :process, self(), :normal})
     completed_state = :sys.get_state(pid)
     assert completed_state.codex_totals.input_tokens == 12
+    assert completed_state.codex_totals.cached_input_tokens == 9
+    assert completed_state.codex_totals.uncached_input_tokens == 3
     assert completed_state.codex_totals.output_tokens == 4
     assert completed_state.codex_totals.total_tokens == 16
   end
@@ -338,6 +377,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                "info" => %{
                  "total_token_usage" => %{
                    "input_tokens" => "2",
+                   "cached_input_tokens" => "1",
                    "output_tokens" => 2,
                    "total_tokens" => 4
                  }
@@ -362,6 +402,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                "info" => %{
                  "total_token_usage" => %{
                    "prompt_tokens" => 10,
+                   "cached_input_tokens" => 6,
                    "completion_tokens" => 5,
                    "total_tokens" => 15
                  }
@@ -376,6 +417,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.codex_input_tokens == 10
+    assert snapshot_entry.codex_cached_input_tokens == 6
+    assert snapshot_entry.codex_uncached_input_tokens == 4
     assert snapshot_entry.codex_output_tokens == 5
     assert snapshot_entry.codex_total_tokens == 15
 
@@ -383,6 +426,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     completed_state = :sys.get_state(pid)
 
     assert completed_state.codex_totals.input_tokens == 10
+    assert completed_state.codex_totals.cached_input_tokens == 6
+    assert completed_state.codex_totals.uncached_input_tokens == 4
     assert completed_state.codex_totals.output_tokens == 5
     assert completed_state.codex_totals.total_tokens == 15
   end
@@ -537,6 +582,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                    },
                    "total_token_usage" => %{
                      "input_tokens" => 200,
+                     "cached_input_tokens" => 150,
                      "output_tokens" => 100,
                      "total_tokens" => 300
                    }
@@ -552,6 +598,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.codex_input_tokens == 200
+    assert snapshot_entry.codex_cached_input_tokens == 150
+    assert snapshot_entry.codex_uncached_input_tokens == 50
     assert snapshot_entry.codex_output_tokens == 100
     assert snapshot_entry.codex_total_tokens == 300
   end
@@ -606,8 +654,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     for usage <- [
-          %{"input_tokens" => 8, "output_tokens" => 3, "total_tokens" => 11},
-          %{"input_tokens" => 10, "output_tokens" => 4, "total_tokens" => 14}
+          %{"input_tokens" => 8, "cached_input_tokens" => 5, "output_tokens" => 3, "total_tokens" => 11},
+          %{"input_tokens" => 10, "cached_input_tokens" => 8, "output_tokens" => 4, "total_tokens" => 14}
         ] do
       send(
         pid,
@@ -626,6 +674,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.codex_input_tokens == 10
+    assert snapshot_entry.codex_cached_input_tokens == 8
+    assert snapshot_entry.codex_uncached_input_tokens == 2
     assert snapshot_entry.codex_output_tokens == 4
     assert snapshot_entry.codex_total_tokens == 14
   end

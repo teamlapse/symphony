@@ -15,13 +15,12 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 1. Polls Linear for candidate work
 2. Creates a workspace per issue
-3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
-   workspace
-4. Sends a workflow prompt to Codex
-5. Keeps Codex working on the issue until the work is done
+3. Launches the configured agent profile inside the workspace
+4. Sends a workflow prompt to the agent
+5. Keeps the executor and optional reviewer agents working on the issue until the work is done
 
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+During Codex app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that
+repo skills can make raw Linear GraphQL calls.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -53,7 +52,21 @@ mise install
 mise exec -- elixir --version
 ```
 
-## Run
+## Run On A Mac
+
+Install or update the published Apple Silicon CLI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/teamlapse/symphony/main/install.sh | sh
+symphony run
+```
+
+`symphony run` prompts for the repository URL, Linear project URL, Linear API key, target branch,
+dashboard port, and optional BuildBuddy API key. It clones the repository to read `WORKFLOW.md`,
+overlays the prompted runtime values, and deletes the run config, source checkout, logs, and
+workspaces when Symphony exits.
+
+Or build from source:
 
 ```bash
 git clone https://github.com/openai/symphony
@@ -62,16 +75,49 @@ mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+mise exec -- ./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails ./WORKFLOW.md
 ```
+
+For high-trust local runs where agents need normal macOS filesystem, network, Bazel, and repo-cache
+access, configure the agent profile explicitly instead of relying on safer defaults. Example Codex
+profile:
+
+```yaml
+agents:
+  default:
+    kind: codex_app_server
+    command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+    approval_policy: never
+    thread_sandbox: danger-full-access
+    turn_sandbox_policy:
+      type: dangerFullAccess
+```
+
+Example Claude CLI profile:
+
+```yaml
+agent:
+  executor: claude
+agents:
+  claude:
+    kind: exec
+    command: claude --print --dangerously-skip-permissions
+    prompt_mode: stdin
+    turn_timeout_ms: 3600000
+```
+
+These settings are intentionally permissive. Use them only in a trusted repo/workspace with
+credentials and filesystem access you are comfortable giving to the selected agent.
 
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:
 
 ```bash
-./bin/symphony /path/to/custom/WORKFLOW.md
+mise exec -- ./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --port 4000 /path/to/custom/WORKFLOW.md
 ```
+
+The published standalone binary accepts the same flags without `mise exec -- ./bin/`.
 
 If no path is passed, Symphony defaults to `./WORKFLOW.md`.
 
@@ -81,7 +127,7 @@ Optional flags:
 - `--port` also starts the Phoenix observability service (default: disabled)
 
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
-Codex session prompt.
+agent session prompt.
 
 Minimal example:
 
@@ -96,8 +142,13 @@ hooks:
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
 agent:
+  executor: default
   max_concurrent_agents: 10
   max_turns: 20
+agents:
+  default:
+    kind: codex_app_server
+    command: codex app-server
 codex:
   command: codex app-server
 ---
@@ -110,6 +161,16 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 Notes:
 
 - If a value is missing, defaults are used.
+- `agent.executor` names the profile in `agents` used for implementation turns.
+- `agents.<name>.kind` can be `codex_app_server` for Codex app-server or `exec` for a generic CLI
+  command that receives the prompt by stdin or prompt file.
+- `exec` commands receive `SYMPHONY_PROMPT_FILE`, `SYMPHONY_AGENT_PROFILE`,
+  `SYMPHONY_AGENT_SESSION_ID`, `SYMPHONY_AGENT_TURN_ID`, and
+  `SYMPHONY_AGENT_TURN_SESSION_ID`. CLI wrappers can use the stable
+  `SYMPHONY_AGENT_SESSION_ID` to resume provider sessions across continuation and review-feedback
+  turns when the provider supports it.
+- If `agents.default` is omitted, the legacy `codex` block is used as the default Codex app-server
+  profile.
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
   - `codex.thread_sandbox` defaults to `workspace-write`
@@ -119,15 +180,38 @@ Notes:
 - When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
   unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
   Symphony validation.
-- `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
+- `agent.max_turns` caps how many back-to-back executor turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+- `review.enabled` starts a separate reviewer profile in the same workspace after executor work.
+  The reviewer compares the branch to `review.target_branch`, writes
+  `.symphony/review/latest.md`, and any findings are fed back to the original executor session
+  until the reviewer reports `status: pass` or configured limits are reached.
+- While the automated reviewer or review-feedback turn is running, the terminal and web dashboards
+  show a runtime stage such as `Agent Review` or `Address Feedback` for that active issue.
+- `review.target_branch` defaults to `origin/main`. It can be set to `$SYMPHONY_TARGET_BRANCH`;
+  when that env var is unset Symphony falls back to `origin/main`, and bare branch names such as
+  `release/2026` are normalized to `origin/release/2026`. Workspace hooks receive the resolved
+  target as `SYMPHONY_TARGET_BRANCH`.
+- `review.prompt_file` can point at a prompt file next to `WORKFLOW.md` when the review prompt is
+  too large to keep in YAML front matter. If both `review.prompt_file` and `review.prompt` are set,
+  the file wins.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
+- For an existing repo with its own worktree lifecycle scripts, call the setup script from
+  `hooks.after_create` and the teardown script from `hooks.before_remove`. Symphony runs
+  `after_create` with `$PWD` set to the empty per-issue workspace directory and runs
+  `before_remove` before deleting the workspace for a terminal issue.
+- `hooks.env_passthrough` forwards selected host environment variables, such as
+  `BUILDBUDDY_API_KEY`, into hook scripts. Hooks also receive `SYMPHONY_WORKSPACE`,
+  `SYMPHONY_HOOK_NAME`, `SYMPHONY_ISSUE_ID`, `SYMPHONY_ISSUE_IDENTIFIER`, and
+  `SYMPHONY_TARGET_BRANCH`.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
+- `tracker.project_slug` can also be set to `$LINEAR_PROJECT_SLUG` or another explicit env var
+  reference.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
@@ -144,6 +228,23 @@ hooks:
 codex:
   command: "$CODEX_BIN --config 'model=\"gpt-5.5\"' app-server"
 ```
+
+Existing repository worktree example:
+
+```yaml
+workspace:
+  root: ~/code/acme-workspaces
+hooks:
+  env_passthrough: [BUILDBUDDY_API_KEY]
+  after_create: |
+    /Users/me/code/acme/scripts/setup-agent-worktree "$PWD" "{{ issue.identifier }}"
+  before_remove: |
+    /Users/me/code/acme/scripts/teardown-agent-worktree "$PWD" "{{ issue.identifier }}"
+```
+
+The setup script should be idempotent enough to tolerate a partially prepared workspace after a
+failed run. The teardown script should tolerate missing build artifacts and already-removed
+worktrees.
 
 - If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
 - If a later reload fails, Symphony keeps running with the last known good workflow and logs the
@@ -171,6 +272,22 @@ The observability UI now runs on a minimal Phoenix stack:
 
 ```bash
 make all
+```
+
+## Release
+
+Apple Silicon macOS binaries are built on `namespace-profile-marquis-ios` and published on every
+push to `main`. The workflow packages a Burrito single-file binary, publishes it as the latest
+GitHub Release, and includes `install.sh` plus checksums.
+
+To build the same artifact locally on Apple Silicon macOS:
+
+```bash
+mise install
+brew install xz
+mise exec -- mix setup
+MIX_ENV=prod BURRITO_TARGET=macos_arm64 SYMPHONY_STANDALONE_RELEASE=1 \
+  mise exec -- mix release.macos_arm64
 ```
 
 Run the real external end-to-end test only when you want Symphony to create disposable Linear

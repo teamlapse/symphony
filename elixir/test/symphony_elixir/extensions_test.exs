@@ -348,6 +348,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
                  "state" => "In Progress",
+                 "runtime_stage" => nil,
                  "worker_host" => nil,
                  "workspace_path" => nil,
                  "session_id" => "thread-http",
@@ -356,7 +357,13 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+                 "tokens" => %{
+                   "input_tokens" => 4,
+                   "cached_input_tokens" => 2,
+                   "uncached_input_tokens" => 2,
+                   "output_tokens" => 8,
+                   "total_tokens" => 12
+                 }
                }
              ],
              "retrying" => [
@@ -372,6 +379,8 @@ defmodule SymphonyElixir.ExtensionsTest do
              ],
              "codex_totals" => %{
                "input_tokens" => 4,
+               "cached_input_tokens" => 2,
+               "uncached_input_tokens" => 2,
                "output_tokens" => 8,
                "total_tokens" => 12,
                "seconds_running" => 42.5
@@ -397,11 +406,18 @@ defmodule SymphonyElixir.ExtensionsTest do
                "session_id" => "thread-http",
                "turn_count" => 7,
                "state" => "In Progress",
+               "runtime_stage" => nil,
                "started_at" => issue_payload["running"]["started_at"],
                "last_event" => "notification",
                "last_message" => "rendered",
                "last_event_at" => nil,
-               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+               "tokens" => %{
+                 "input_tokens" => 4,
+                 "cached_input_tokens" => 2,
+                 "uncached_input_tokens" => 2,
+                 "output_tokens" => 8,
+                 "total_tokens" => 12
+               }
              },
              "retry" => nil,
              "logs" => %{"codex_session_logs" => []},
@@ -697,6 +713,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           last_codex_timestamp: nil,
           last_codex_event: :notification,
           codex_input_tokens: 4,
+          codex_cached_input_tokens: 2,
           codex_output_tokens: 8,
           codex_total_tokens: 12,
           started_at: DateTime.utc_now()
@@ -711,7 +728,13 @@ defmodule SymphonyElixir.ExtensionsTest do
           error: "boom"
         }
       ],
-      codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
+      codex_totals: %{
+        input_tokens: 4,
+        cached_input_tokens: 2,
+        output_tokens: 8,
+        total_tokens: 12,
+        seconds_running: 42.5
+      },
       rate_limits: %{"primary" => %{"remaining" => 11}}
     }
   end

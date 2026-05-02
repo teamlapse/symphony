@@ -45,3 +45,49 @@ defmodule SymphonyElixir.Application do
     :ok
   end
 end
+
+defmodule SymphonyElixir.StandaloneApplication do
+  @moduledoc """
+  OTP entrypoint for single-file release binaries.
+
+  Escript builds call `SymphonyElixir.CLI.main/1` directly. Burrito releases start
+  the OTP application instead, so this module configures Symphony from runtime CLI
+  arguments before starting the normal supervision tree.
+  """
+
+  use Application
+
+  alias Burrito.Util.Args, as: BurritoArgs
+
+  @impl true
+  def start(type, args) do
+    case SymphonyElixir.CLI.configure(runtime_argv()) do
+      :ok ->
+        SymphonyElixir.Application.start(type, args)
+
+      {:halt, message, status} ->
+        IO.puts(message)
+        {:ok, halt_soon(status)}
+
+      {:error, message} ->
+        IO.puts(:stderr, message)
+        System.halt(1)
+    end
+  end
+
+  @impl true
+  def stop(state), do: SymphonyElixir.Application.stop(state)
+
+  defp halt_soon(status) do
+    spawn(fn ->
+      Process.sleep(10)
+      :init.stop(status)
+    end)
+  end
+
+  defp runtime_argv do
+    BurritoArgs.argv()
+  rescue
+    _error -> System.argv()
+  end
+end

@@ -1,10 +1,12 @@
 defmodule SymphonyElixir.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+
   def project do
     [
       app: :symphony_elixir,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.19",
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       start_permanent: Mix.env() == :prod,
@@ -25,6 +27,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.HttpServer,
           SymphonyElixir.StatusDashboard,
           SymphonyElixir.LogFile,
+          SymphonyElixir.StandaloneApplication,
           SymphonyElixir.Workspace,
           SymphonyElixirWeb.DashboardLive,
           SymphonyElixirWeb.Endpoint,
@@ -47,6 +50,7 @@ defmodule SymphonyElixir.MixProject do
         plt_add_apps: [:mix]
       ],
       escript: escript(),
+      releases: releases(),
       aliases: aliases(),
       deps: deps()
     ]
@@ -55,7 +59,7 @@ defmodule SymphonyElixir.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      mod: {SymphonyElixir.Application, []},
+      mod: application_mod(),
       extra_applications: [:logger]
     ]
   end
@@ -74,15 +78,25 @@ defmodule SymphonyElixir.MixProject do
       {:yaml_elixir, "~> 2.12"},
       {:solid, "~> 1.2"},
       {:ecto, "~> 3.13"},
+      {:burrito, "~> 1.5"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
     ]
+  end
+
+  defp application_mod do
+    if System.get_env("SYMPHONY_STANDALONE_RELEASE") == "1" do
+      {SymphonyElixir.StandaloneApplication, []}
+    else
+      {SymphonyElixir.Application, []}
+    end
   end
 
   defp aliases do
     [
       setup: ["deps.get"],
       build: ["escript.build"],
+      "release.macos_arm64": ["release symphony --overwrite"],
       lint: ["specs.check", "credo --strict"]
     ]
   end
@@ -93,6 +107,19 @@ defmodule SymphonyElixir.MixProject do
       main_module: SymphonyElixir.CLI,
       name: "symphony",
       path: "bin/symphony"
+    ]
+  end
+
+  defp releases do
+    [
+      symphony: [
+        steps: [:assemble, &Burrito.wrap/1],
+        burrito: [
+          targets: [
+            macos_arm64: [os: :darwin, cpu: :aarch64]
+          ]
+        ]
+      ]
     ]
   end
 end

@@ -19,7 +19,7 @@ defmodule SymphonyElixir.StatusDashboard do
   @running_stage_width 14
   @running_pid_width 8
   @running_age_width 12
-  @running_tokens_width 10
+  @running_tokens_width 31
   @running_session_width 14
   @running_event_default_width 44
   @running_event_min_width 12
@@ -337,6 +337,8 @@ defmodule SymphonyElixir.StatusDashboard do
         project_link_lines = format_project_link_lines()
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
         codex_input_tokens = Map.get(codex_totals, :input_tokens, 0)
+        codex_cached_input_tokens = Map.get(codex_totals, :cached_input_tokens, 0)
+        codex_uncached_input_tokens = uncached_input_tokens(codex_input_tokens, codex_cached_input_tokens)
         codex_output_tokens = Map.get(codex_totals, :output_tokens, 0)
         codex_total_tokens = Map.get(codex_totals, :total_tokens, 0)
         codex_seconds_running = Map.get(codex_totals, :seconds_running, 0)
@@ -357,7 +359,11 @@ defmodule SymphonyElixir.StatusDashboard do
            colorize("│ Runtime: ", @ansi_bold) <>
              colorize(format_runtime_seconds(codex_seconds_running), @ansi_magenta),
            colorize("│ Tokens: ", @ansi_bold) <>
-             colorize("in #{format_count(codex_input_tokens)}", @ansi_yellow) <>
+             colorize("uncached in #{format_count(codex_uncached_input_tokens)}", @ansi_yellow) <>
+             colorize(" | ", @ansi_gray) <>
+             colorize("cached in #{format_count(codex_cached_input_tokens)}", @ansi_yellow) <>
+             colorize(" | ", @ansi_gray) <>
+             colorize("input total #{format_count(codex_input_tokens)}", @ansi_yellow) <>
              colorize(" | ", @ansi_gray) <>
              colorize("out #{format_count(codex_output_tokens)}", @ansi_yellow) <>
              colorize(" | ", @ansi_gray) <>
@@ -589,18 +595,17 @@ defmodule SymphonyElixir.StatusDashboard do
   # credo:disable-for-next-line
   defp format_running_summary(running_entry, running_event_width) do
     issue = format_cell(running_entry.identifier || "unknown", @running_id_width)
-    state = running_entry.state || "unknown"
+    state = Map.get(running_entry, :runtime_stage) || running_entry.state || "unknown"
     state_display = format_cell(to_string(state), @running_stage_width)
     session = running_entry.session_id |> compact_session_id() |> format_cell(@running_session_width)
     pid = format_cell(running_entry.codex_app_server_pid || "n/a", @running_pid_width)
-    total_tokens = running_entry.codex_total_tokens || 0
     runtime_seconds = running_entry.runtime_seconds || 0
     turn_count = Map.get(running_entry, :turn_count, 0)
     age = format_cell(format_runtime_and_turns(runtime_seconds, turn_count), @running_age_width)
     event = running_entry.last_codex_event || "none"
     event_label = format_cell(summarize_message(running_entry.last_codex_message), running_event_width)
 
-    tokens = format_count(total_tokens) |> format_cell(@running_tokens_width, :right)
+    tokens = running_token_triplet(running_entry) |> format_cell(@running_tokens_width, :right)
 
     status_color =
       case event do
@@ -716,6 +721,24 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp format_runtime_and_turns(seconds, _turn_count), do: format_runtime_seconds(seconds)
 
+  defp running_token_triplet(running_entry) do
+    input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
+    cached_input_tokens = Map.get(running_entry, :codex_cached_input_tokens, 0)
+
+    uncached_tokens =
+      Map.get(running_entry, :codex_uncached_input_tokens) ||
+        uncached_input_tokens(input_tokens, cached_input_tokens)
+
+    total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+
+    [
+      format_count(uncached_tokens),
+      format_count(cached_input_tokens),
+      format_count(total_tokens)
+    ]
+    |> Enum.join("/")
+  end
+
   defp format_count(nil), do: "0"
 
   defp format_count(value) when is_integer(value) do
@@ -743,7 +766,7 @@ defmodule SymphonyElixir.StatusDashboard do
         format_cell("STAGE", @running_stage_width),
         format_cell("PID", @running_pid_width),
         format_cell("AGE / TURN", @running_age_width),
-        format_cell("TOKENS", @running_tokens_width),
+        format_cell("UNCACHED/CACHED/TOTAL", @running_tokens_width),
         format_cell("SESSION", @running_session_width),
         format_cell("EVENT", running_event_width)
       ]
@@ -1149,8 +1172,44 @@ defmodule SymphonyElixir.StatusDashboard do
   defp humanize_codex_event(:startup_failed, message, _payload), do: "startup failed: #{format_reason(message)}"
   defp humanize_codex_event(:turn_failed, _message, payload), do: humanize_codex_method("turn/failed", payload)
   defp humanize_codex_event(:turn_cancelled, _message, _payload), do: "turn cancelled"
+  defp humanize_codex_event(:agent_review_started, _message, payload), do: "agent review running#{round_suffix(payload)}"
+
+  defp humanize_codex_event(:agent_review_completed, _message, payload) do
+    status = map_value(payload, ["status", :status])
+    suffix = if is_binary(status), do: " (#{status})", else: ""
+    "agent review completed#{suffix}"
+  end
+
+  defp humanize_codex_event(:agent_review_feedback_started, _message, payload),
+    do: "addressing review feedback#{turn_suffix(payload)}"
+
+  defp humanize_codex_event(:agent_review_feedback_completed, _message, payload),
+    do: "agent review feedback addressed#{turn_suffix(payload)}"
+
   defp humanize_codex_event(:malformed, _message, _payload), do: "malformed JSON event from codex"
   defp humanize_codex_event(_event, _message, _payload), do: nil
+
+  defp round_suffix(payload) do
+    round = parse_integer(map_value(payload, ["round", :round]))
+    max_rounds = parse_integer(map_value(payload, ["max_rounds", :max_rounds]))
+
+    cond do
+      is_integer(round) and is_integer(max_rounds) -> " (round #{round}/#{max_rounds})"
+      is_integer(round) -> " (round #{round})"
+      true -> ""
+    end
+  end
+
+  defp turn_suffix(payload) do
+    turn = parse_integer(map_value(payload, ["turn", :turn]))
+    max_turns = parse_integer(map_value(payload, ["max_turns", :max_turns]))
+
+    cond do
+      is_integer(turn) and is_integer(max_turns) -> " (turn #{turn}/#{max_turns})"
+      is_integer(turn) -> " (turn #{turn})"
+      true -> ""
+    end
+  end
 
   defp unwrap_codex_message_payload(%{} = message) do
     cond do
@@ -1572,6 +1631,16 @@ defmodule SymphonyElixir.StatusDashboard do
         ])
       )
 
+    cached_input =
+      parse_integer(
+        map_value(usage, [
+          "cached_input_tokens",
+          :cached_input_tokens,
+          "cachedInputTokens",
+          :cachedInputTokens
+        ])
+      )
+
     output =
       parse_integer(
         map_value(usage, [
@@ -1599,8 +1668,7 @@ defmodule SymphonyElixir.StatusDashboard do
       )
 
     parts =
-      []
-      |> append_usage_part("in", input)
+      usage_input_parts(input, cached_input)
       |> append_usage_part("out", output)
       |> append_usage_part("total", total)
 
@@ -1612,8 +1680,28 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp format_usage_counts(_usage), do: nil
 
+  defp usage_input_parts(input, cached_input)
+       when is_integer(input) and is_integer(cached_input) do
+    []
+    |> append_usage_part("uncached in", uncached_input_tokens(input, cached_input))
+    |> append_usage_part("cached in", cached_input)
+    |> append_usage_part("input total", input)
+  end
+
+  defp usage_input_parts(input, _cached_input), do: append_usage_part([], "in", input)
+
   defp append_usage_part(parts, _label, value) when not is_integer(value), do: parts
   defp append_usage_part(parts, label, value), do: parts ++ ["#{label} #{format_count(value)}"]
+
+  defp uncached_input_tokens(input_tokens, cached_input_tokens)
+       when is_integer(input_tokens) and is_integer(cached_input_tokens) do
+    max(input_tokens - cached_input_tokens, 0)
+  end
+
+  defp uncached_input_tokens(input_tokens, _cached_input_tokens) when is_integer(input_tokens),
+    do: max(input_tokens, 0)
+
+  defp uncached_input_tokens(_input_tokens, _cached_input_tokens), do: 0
 
   defp format_rate_limits_summary(nil), do: "n/a"
 

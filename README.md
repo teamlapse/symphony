@@ -5,7 +5,7 @@ work instead of supervising coding agents.
 
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](.github/media/symphony-demo.mp4)
 
-_In this [demo video](.github/media/symphony-demo.mp4), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher level._
+_In this [demo video](.github/media/symphony-demo.mp4), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise individual coding-agent sessions; they can manage the work at a higher level._
 
 > [!WARNING]
 > Symphony is a low-key engineering preview for testing in trusted environments.
@@ -17,6 +17,20 @@ _In this [demo video](.github/media/symphony-demo.mp4), Symphony monitors a Line
 Symphony works best in codebases that have adopted
 [harness engineering](https://openai.com/index/harness-engineering/). Symphony is the next step --
 moving from managing coding agents to managing work that needs to get done.
+
+### Install the CLI
+
+Apple Silicon macOS builds are published from `main` as GitHub Release assets.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/teamlapse/symphony/main/install.sh | sh
+symphony run
+```
+
+The installer is idempotent: if `symphony` is already on `PATH`, it updates that binary in place;
+otherwise it installs to `~/.local/bin` unless `SYMPHONY_INSTALL_DIR` is set.
+`symphony run` starts a fresh ephemeral session and prompts for the repository URL, Linear project
+URL, Linear API key, target branch, dashboard port, and optional BuildBuddy API key.
 
 ### Option 1. Make your own
 

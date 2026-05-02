@@ -19,7 +19,7 @@ defmodule SymphonyElixirWeb.Presenter do
           },
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
-          codex_totals: snapshot.codex_totals,
+          codex_totals: codex_totals_payload(snapshot.codex_totals),
           rate_limits: snapshot.rate_limits
         }
 
@@ -100,6 +100,7 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       state: entry.state,
+      runtime_stage: Map.get(entry, :runtime_stage),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
@@ -108,11 +109,7 @@ defmodule SymphonyElixirWeb.Presenter do
       last_message: summarize_message(entry.last_codex_message),
       started_at: iso8601(entry.started_at),
       last_event_at: iso8601(entry.last_codex_timestamp),
-      tokens: %{
-        input_tokens: entry.codex_input_tokens,
-        output_tokens: entry.codex_output_tokens,
-        total_tokens: entry.codex_total_tokens
-      }
+      tokens: entry_token_payload(entry)
     }
   end
 
@@ -135,15 +132,12 @@ defmodule SymphonyElixirWeb.Presenter do
       session_id: running.session_id,
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
+      runtime_stage: Map.get(running, :runtime_stage),
       started_at: iso8601(running.started_at),
       last_event: running.last_codex_event,
       last_message: summarize_message(running.last_codex_message),
       last_event_at: iso8601(running.last_codex_timestamp),
-      tokens: %{
-        input_tokens: running.codex_input_tokens,
-        output_tokens: running.codex_output_tokens,
-        total_tokens: running.codex_total_tokens
-      }
+      tokens: entry_token_payload(running)
     }
   end
 
@@ -180,6 +174,66 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+
+  defp codex_totals_payload(totals) when is_map(totals) do
+    token_payload(totals)
+    |> Map.put(:seconds_running, Map.get(totals, :seconds_running) || Map.get(totals, "seconds_running") || 0)
+  end
+
+  defp codex_totals_payload(_totals) do
+    token_payload(%{})
+    |> Map.put(:seconds_running, 0)
+  end
+
+  defp entry_token_payload(entry) when is_map(entry) do
+    input_tokens = token_value(entry, :codex_input_tokens, 0)
+    cached_input_tokens = token_value(entry, :codex_cached_input_tokens, 0)
+
+    %{
+      input_tokens: input_tokens,
+      cached_input_tokens: cached_input_tokens,
+      uncached_input_tokens:
+        token_value(
+          entry,
+          :codex_uncached_input_tokens,
+          uncached_input_tokens(input_tokens, cached_input_tokens)
+        ),
+      output_tokens: token_value(entry, :codex_output_tokens, 0),
+      total_tokens: token_value(entry, :codex_total_tokens, 0)
+    }
+  end
+
+  defp token_payload(tokens) when is_map(tokens) do
+    input_tokens = token_value(tokens, :input_tokens, 0)
+    cached_input_tokens = token_value(tokens, :cached_input_tokens, 0)
+
+    %{
+      input_tokens: input_tokens,
+      cached_input_tokens: cached_input_tokens,
+      uncached_input_tokens:
+        token_value(
+          tokens,
+          :uncached_input_tokens,
+          uncached_input_tokens(input_tokens, cached_input_tokens)
+        ),
+      output_tokens: token_value(tokens, :output_tokens, 0),
+      total_tokens: token_value(tokens, :total_tokens, 0)
+    }
+  end
+
+  defp token_value(map, key, default) when is_map(map) and is_atom(key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key)) || default
+  end
+
+  defp uncached_input_tokens(input_tokens, cached_input_tokens)
+       when is_integer(input_tokens) and is_integer(cached_input_tokens) do
+    max(input_tokens - cached_input_tokens, 0)
+  end
+
+  defp uncached_input_tokens(input_tokens, _cached_input_tokens) when is_integer(input_tokens),
+    do: max(input_tokens, 0)
+
+  defp uncached_input_tokens(_input_tokens, _cached_input_tokens), do: 0
 
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()
