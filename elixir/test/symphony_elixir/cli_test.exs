@@ -12,6 +12,7 @@ defmodule SymphonyElixir.CLITest do
     "LINEAR_PROJECT_URL",
     "SYMPHONY_MANAGED_REPO_URL",
     "SYMPHONY_TARGET_BRANCH",
+    "SYMPHONY_PORT",
     "SYMPHONY_WORKSPACE_ROOT"
   ]
 
@@ -225,6 +226,78 @@ defmodule SymphonyElixir.CLITest do
     assert System.get_env("LINEAR_PROJECT_SLUG") == "littleapps-ui-framework-6609e93fb3b8"
     assert System.get_env("SYMPHONY_MANAGED_REPO_URL") == repo
     assert System.get_env("BUILDBUDDY_API_KEY") == "bb_test"
+    refute System.get_env("SYMPHONY_TARGET_BRANCH")
+  end
+
+  test "run prompts explicitly instead of defaulting from environment" do
+    System.put_env("BUILDBUDDY_API_KEY", "bb_env")
+    System.put_env("LINEAR_API_KEY", "lin_env")
+    System.put_env("LINEAR_PROJECT_URL", "https://linear.app/project/env-project/issues")
+    System.put_env("SYMPHONY_MANAGED_REPO_URL", "/tmp/env-repo")
+    System.put_env("SYMPHONY_TARGET_BRANCH", "env-branch")
+    System.put_env("SYMPHONY_PORT", "4999")
+
+    parent = self()
+    repo = create_workflow_repo!("release/2026")
+
+    deps = %{
+      file_regular?: &File.regular?/1,
+      set_workflow_file_path: fn path ->
+        send(parent, {:workflow_path, path})
+        :ok
+      end,
+      set_logs_root: fn path ->
+        send(parent, {:logs_root, path})
+        :ok
+      end,
+      set_server_port_override: fn port ->
+        send(parent, {:port, port})
+        :ok
+      end,
+      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
+    }
+
+    input =
+      [
+        repo,
+        "https://linear.app/project/littleapps-ui-framework-6609e93fb3b8/issues",
+        "lin_prompt",
+        "release/2026",
+        "bb_prompt",
+        "4124"
+      ]
+      |> Enum.join("\n")
+      |> Kernel.<>("\n")
+
+    output =
+      capture_io(input, fn ->
+        assert :ok = CLI.configure(["run"], deps)
+      end)
+
+    assert output =~ "Repo URL:"
+    assert output =~ "Linear project URL:"
+    assert output =~ "Linear API key:"
+    assert output =~ "Target branch [main]:"
+    assert output =~ "BuildBuddy API key:"
+    assert output =~ "Dashboard port [4000]:"
+    assert output =~ "Target branch: release/2026"
+
+    assert_received {:workflow_path, workflow_path}
+    assert_received {:logs_root, logs_root}
+    assert_received {:port, 4124}
+
+    workflow = File.read!(workflow_path)
+    run_root = Path.dirname(workflow_path)
+
+    assert workflow =~ ~s(project_slug: "littleapps-ui-framework-6609e93fb3b8")
+    assert workflow =~ ~s(target_branch: "origin/release/2026")
+    assert workflow =~ "target_branch='release/2026'"
+    assert logs_root == Path.join(run_root, "logs")
+    assert System.get_env("LINEAR_API_KEY") == "lin_prompt"
+    assert System.get_env("LINEAR_PROJECT_SLUG") == "littleapps-ui-framework-6609e93fb3b8"
+    assert System.get_env("LINEAR_PROJECT_URL") == "https://linear.app/project/littleapps-ui-framework-6609e93fb3b8/issues"
+    assert System.get_env("SYMPHONY_MANAGED_REPO_URL") == repo
+    assert System.get_env("BUILDBUDDY_API_KEY") == "bb_prompt"
     refute System.get_env("SYMPHONY_TARGET_BRANCH")
   end
 

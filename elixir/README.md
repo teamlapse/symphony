@@ -66,6 +66,10 @@ dashboard port, and optional BuildBuddy API key. It clones the repository to rea
 overlays the prompted runtime values, and deletes the run config, source checkout, logs, and
 workspaces when Symphony exits.
 
+Existing environment variables are ignored while collecting these answers so every interactive run
+is explicit. Use `symphony run --repo-url ... --linear-project-url ...` style flags only when you
+want to intentionally skip prompts.
+
 Or build from source:
 
 ```bash

@@ -48,6 +48,16 @@ defmodule SymphonyElixir.CLI do
     "SYMPHONY_MANAGED_REPO_URL",
     "SYMPHONY_WORKSPACE_ROOT"
   ]
+  @managed_run_env_names [
+    "BUILDBUDDY_API_KEY",
+    "LINEAR_API_KEY",
+    "LINEAR_PROJECT_SLUG",
+    "LINEAR_PROJECT_URL",
+    "SYMPHONY_MANAGED_REPO_URL",
+    "SYMPHONY_PORT",
+    "SYMPHONY_TARGET_BRANCH",
+    "SYMPHONY_WORKSPACE_ROOT"
+  ]
   @dialyzer :no_match
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
@@ -338,33 +348,33 @@ defmodule SymphonyElixir.CLI do
   defp collect_run_answers(opts) do
     repo_url =
       opts
-      |> Keyword.get(:repo_url, System.get_env("SYMPHONY_MANAGED_REPO_URL"))
+      |> Keyword.get(:repo_url)
       |> prompt_required("Repo URL")
 
     linear_project_url =
       opts
-      |> Keyword.get(:linear_project_url, System.get_env("LINEAR_PROJECT_URL"))
+      |> Keyword.get(:linear_project_url)
       |> prompt_required("Linear project URL")
 
     linear_api_key =
       opts
-      |> Keyword.get(:linear_api_key, System.get_env("LINEAR_API_KEY"))
+      |> Keyword.get(:linear_api_key)
       |> prompt_secret_required("Linear API key")
 
     target_branch =
       opts
-      |> Keyword.get(:target_branch, System.get_env("SYMPHONY_TARGET_BRANCH") || "main")
+      |> Keyword.get(:target_branch)
       |> prompt_optional("Target branch", "main")
       |> normalize_target_branch()
 
     buildbuddy_api_key =
       opts
-      |> Keyword.get(:buildbuddy_api_key, System.get_env("BUILDBUDDY_API_KEY"))
+      |> Keyword.get(:buildbuddy_api_key)
       |> prompt_secret_optional("BuildBuddy API key", nil)
 
     port =
       opts
-      |> Keyword.get(:port, env_integer("SYMPHONY_PORT", 4000))
+      |> Keyword.get(:port)
       |> prompt_port()
 
     with {:ok, project_slug} <- linear_project_slug(linear_project_url) do
@@ -466,19 +476,6 @@ defmodule SymphonyElixir.CLI do
     :ok
   rescue
     _error -> :ok
-  end
-
-  defp env_integer(name, default) do
-    case System.get_env(name) do
-      nil ->
-        default
-
-      value ->
-        case Integer.parse(value) do
-          {integer, ""} -> integer
-          _ -> default
-        end
-    end
   end
 
   defp linear_project_slug(url) do
@@ -729,6 +726,7 @@ defmodule SymphonyElixir.CLI do
       }
       |> maybe_put_env("BUILDBUDDY_API_KEY", answers.buildbuddy_api_key)
 
+    clear_managed_run_environment()
     System.put_env(env)
 
     with :ok <- deps.set_logs_root.(Path.expand(run_paths.logs_root)) do
@@ -740,6 +738,10 @@ defmodule SymphonyElixir.CLI do
 
   defp maybe_put_env(env, _name, value) when value in [nil, ""], do: env
   defp maybe_put_env(env, name, value), do: Map.put(env, name, value)
+
+  defp clear_managed_run_environment do
+    Enum.each(@managed_run_env_names, &System.delete_env/1)
+  end
 
   defp yaml(map) when is_map(map) do
     map

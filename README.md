@@ -31,6 +31,8 @@ The installer is idempotent: if `symphony` is already on `PATH`, it updates that
 otherwise it installs to `~/.local/bin` unless `SYMPHONY_INSTALL_DIR` is set.
 `symphony run` starts a fresh ephemeral session and prompts for the repository URL, Linear project
 URL, Linear API key, target branch, dashboard port, and optional BuildBuddy API key.
+Existing environment variables are not used as hidden answers; pass flags if you want a
+non-interactive run.
 
 ### Option 1. Make your own
 
