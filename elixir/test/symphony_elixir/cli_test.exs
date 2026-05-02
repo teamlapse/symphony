@@ -212,6 +212,7 @@ defmodule SymphonyElixir.CLITest do
     assert workflow =~ "## Symphony run contract"
     assert workflow =~ ~s(project_slug: "littleapps-ui-framework-6609e93fb3b8")
     assert workflow =~ ~s(target_branch: "origin/release/2026")
+    assert workflow =~ ~s(prompt_file: "#{Path.join([run_root, "workflow-repo", "REVIEW_PROMPT.md"])}")
     assert workflow =~ "target_branch='release/2026'"
     refute workflow =~ "SYMPHONY_TARGET_BRANCH"
     assert workflow =~ ~s(root: "#{Path.join(run_root, "workspaces")}")
@@ -293,6 +294,7 @@ defmodule SymphonyElixir.CLITest do
 
     assert workflow =~ ~s(project_slug: "littleapps-ui-framework-6609e93fb3b8")
     assert workflow =~ ~s(target_branch: "origin/release/2026")
+    assert workflow =~ ~s(prompt_file: "#{Path.join([run_root, "workflow-repo", "REVIEW_PROMPT.md"])}")
     assert workflow =~ "target_branch='release/2026'"
     assert logs_root == Path.join(run_root, "logs")
     assert System.get_env("LINEAR_API_KEY") == "lin_prompt"
@@ -338,13 +340,15 @@ defmodule SymphonyElixir.CLITest do
       before_remove: old cleanup
     review:
       enabled: true
+      prompt_file: REVIEW_PROMPT.md
     ---
 
     Original prompt.
     """
 
     File.write!(Path.join(repo, "WORKFLOW.md"), workflow)
-    git!(["add", "WORKFLOW.md"], repo)
+    File.write!(Path.join(repo, "REVIEW_PROMPT.md"), "Review from the repo prompt file.\n")
+    git!(["add", "WORKFLOW.md", "REVIEW_PROMPT.md"], repo)
     git!(["commit", "-m", "Add workflow"], repo)
 
     on_exit(fn -> File.rm_rf(root) end)

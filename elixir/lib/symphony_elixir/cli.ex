@@ -582,7 +582,7 @@ defmodule SymphonyElixir.CLI do
   defp build_run_workflow(source_path, run_paths, answers) do
     with {:ok, source} <- File.read(source_path),
          {:ok, front_matter, prompt} <- split_workflow(source),
-         merged_front_matter <- merge_run_front_matter(front_matter, run_paths, answers),
+         {:ok, merged_front_matter} <- merge_run_front_matter(front_matter, run_paths, answers, source_path),
          workflow <-
            ["---\n", yaml(merged_front_matter), "---\n", run_prompt_prelude(), "\n\n", String.trim_leading(prompt)]
            |> IO.iodata_to_binary(),
@@ -622,12 +622,15 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
-  defp merge_run_front_matter(front_matter, run_paths, answers) do
-    front_matter
-    |> Map.put("tracker", merge_tracker(Map.get(front_matter, "tracker", %{}), answers))
-    |> Map.put("workspace", merge_workspace(Map.get(front_matter, "workspace", %{}), run_paths))
-    |> Map.put("hooks", merge_hooks(Map.get(front_matter, "hooks", %{}), answers))
-    |> Map.put("review", merge_review(Map.get(front_matter, "review", %{}), answers))
+  defp merge_run_front_matter(front_matter, run_paths, answers, source_path) do
+    with {:ok, review} <- merge_review(Map.get(front_matter, "review", %{}), answers, source_path) do
+      {:ok,
+       front_matter
+       |> Map.put("tracker", merge_tracker(Map.get(front_matter, "tracker", %{}), answers))
+       |> Map.put("workspace", merge_workspace(Map.get(front_matter, "workspace", %{}), run_paths))
+       |> Map.put("hooks", merge_hooks(Map.get(front_matter, "hooks", %{}), answers))
+       |> Map.put("review", review)}
+    end
   end
 
   defp merge_tracker(tracker, answers) when is_map(tracker) do
@@ -650,8 +653,40 @@ defmodule SymphonyElixir.CLI do
     |> Map.put("before_remove", default_before_remove_hook())
   end
 
-  defp merge_review(review, answers) when is_map(review) do
-    Map.put(review, "target_branch", "origin/#{answers.target_branch}")
+  defp merge_review(review, answers, source_path) when is_map(review) do
+    review
+    |> Map.put("target_branch", "origin/#{answers.target_branch}")
+    |> rewrite_review_prompt_file(source_path)
+  end
+
+  defp rewrite_review_prompt_file(review, source_path) do
+    case Map.get(review, "prompt_file") do
+      prompt_file when is_binary(prompt_file) ->
+        prompt_file = String.trim(prompt_file)
+
+        if prompt_file == "" do
+          {:ok, review}
+        else
+          rewrite_non_empty_review_prompt_file(review, prompt_file, source_path)
+        end
+
+      _prompt_file ->
+        {:ok, review}
+    end
+  end
+
+  defp rewrite_non_empty_review_prompt_file(review, prompt_file, source_path) do
+    prompt_path =
+      case Path.type(prompt_file) do
+        :absolute -> Path.expand(prompt_file)
+        :relative -> source_path |> Path.dirname() |> Path.join(prompt_file) |> Path.expand()
+      end
+
+    if File.regular?(prompt_path) do
+      {:ok, Map.put(review, "prompt_file", prompt_path)}
+    else
+      {:error, "review.prompt_file not found: #{prompt_path}"}
+    end
   end
 
   defp merge_list(values, required) when is_list(values) do
