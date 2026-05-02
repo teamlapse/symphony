@@ -18,6 +18,20 @@ Symphony works best in codebases that have adopted
 [harness engineering](https://openai.com/index/harness-engineering/). Symphony is the next step --
 moving from managing coding agents to managing work that needs to get done.
 
+### Install the CLI
+
+Apple Silicon macOS builds are published from `main` as GitHub Release assets.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/teamlapse/symphony/main/install.sh | sh
+symphony run
+```
+
+The installer is idempotent: if `symphony` is already on `PATH`, it updates that binary in place;
+otherwise it installs to `~/.local/bin` unless `SYMPHONY_INSTALL_DIR` is set.
+`symphony run` starts a fresh ephemeral session and prompts for the repository URL, Linear project
+URL, Linear API key, target branch, dashboard port, and optional BuildBuddy API key.
+
 ### Option 1. Make your own
 
 Tell your favorite coding agent to build Symphony in a programming language of your choice:

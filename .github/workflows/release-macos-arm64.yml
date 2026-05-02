@@ -1,0 +1,119 @@
+name: Release macOS ARM64
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: release-macos-arm64-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and Publish
+    runs-on: namespace-profile-marquis-ios
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up mise tools
+        uses: jdx/mise-action@v3
+        with:
+          install: true
+          cache: true
+          working_directory: elixir
+
+      - name: Install release tools
+        run: |
+          if ! command -v xz >/dev/null 2>&1; then
+            brew install xz
+          fi
+
+          if command -v brew >/dev/null 2>&1 && brew --prefix xz >/dev/null 2>&1; then
+            echo "$(brew --prefix xz)/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Fetch dependencies
+        working-directory: elixir
+        run: mise exec -- mix setup
+
+      - name: Build standalone binary
+        working-directory: elixir
+        env:
+          MIX_ENV: prod
+          BURRITO_TARGET: macos_arm64
+          SYMPHONY_STANDALONE_RELEASE: "1"
+        run: mise exec -- mix release.macos_arm64
+
+      - name: Stage artifacts
+        id: artifacts
+        run: |
+          set -euo pipefail
+
+          mkdir -p artifacts
+
+          binary="$(find elixir/burrito_out -type f -name 'symphony*' | head -n 1)"
+          if [[ -z "$binary" ]]; then
+            echo "::error::Burrito did not produce a symphony binary"
+            exit 1
+          fi
+
+          cp "$binary" artifacts/symphony
+          chmod 755 artifacts/symphony
+
+          if command -v codesign >/dev/null 2>&1; then
+            codesign --force --sign - artifacts/symphony
+          fi
+
+          tar -C artifacts -czf artifacts/symphony-darwin-arm64.tar.gz symphony
+          cp install.sh artifacts/install.sh
+          chmod 755 artifacts/install.sh
+
+          (
+            cd artifacts
+            shasum -a 256 symphony-darwin-arm64.tar.gz symphony install.sh > checksums.sha256
+          )
+
+          version="$(sed -n 's/.*@version "\([^"]*\)".*/\1/p' elixir/mix.exs | head -n 1)"
+          if [[ -z "$version" ]]; then
+            echo "::error::Could not read Symphony version from elixir/mix.exs"
+            exit 1
+          fi
+          short_sha="$(git rev-parse --short HEAD)"
+          stamp="$(date -u +%Y%m%d%H%M%S)"
+
+          echo "tag=symphony/v${version}-${stamp}-${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "name=Symphony v${version} (${short_sha})" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.artifacts.outputs.tag }}
+          name: ${{ steps.artifacts.outputs.name }}
+          body: |
+            Automated Apple Silicon macOS release of the `symphony` CLI from `main`.
+
+            Install or update:
+
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sh
+            symphony run
+            ```
+          files: |
+            artifacts/symphony-darwin-arm64.tar.gz
+            artifacts/symphony
+            artifacts/install.sh
+            artifacts/checksums.sha256
+          draft: false
+          prerelease: false
+          make_latest: true

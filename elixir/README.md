@@ -54,6 +54,20 @@ mise exec -- elixir --version
 
 ## Run On A Mac
 
+Install or update the published Apple Silicon CLI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/teamlapse/symphony/main/install.sh | sh
+symphony run
+```
+
+`symphony run` prompts for the repository URL, Linear project URL, Linear API key, target branch,
+dashboard port, and optional BuildBuddy API key. It clones the repository to read `WORKFLOW.md`,
+overlays the prompted runtime values, and deletes the run config, source checkout, logs, and
+workspaces when Symphony exits.
+
+Or build from source:
+
 ```bash
 git clone https://github.com/openai/symphony
 cd symphony/elixir
@@ -61,7 +75,7 @@ mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+mise exec -- ./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails ./WORKFLOW.md
 ```
 
 For high-trust local runs where agents need normal macOS filesystem, network, Bazel, and repo-cache
@@ -100,8 +114,10 @@ credentials and filesystem access you are comfortable giving to the selected age
 Pass a custom workflow file path to `./bin/symphony` when starting the service:
 
 ```bash
-mise exec -- ./bin/symphony /path/to/custom/WORKFLOW.md --port 4000
+mise exec -- ./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --port 4000 /path/to/custom/WORKFLOW.md
 ```
+
+The published standalone binary accepts the same flags without `mise exec -- ./bin/`.
 
 If no path is passed, Symphony defaults to `./WORKFLOW.md`.
 
@@ -256,6 +272,22 @@ The observability UI now runs on a minimal Phoenix stack:
 
 ```bash
 make all
+```
+
+## Release
+
+Apple Silicon macOS binaries are built on `namespace-profile-marquis-ios` and published on every
+push to `main`. The workflow packages a Burrito single-file binary, publishes it as the latest
+GitHub Release, and includes `install.sh` plus checksums.
+
+To build the same artifact locally on Apple Silicon macOS:
+
+```bash
+mise install
+brew install xz
+mise exec -- mix setup
+MIX_ENV=prod BURRITO_TARGET=macos_arm64 SYMPHONY_STANDALONE_RELEASE=1 \
+  mise exec -- mix release.macos_arm64
 ```
 
 Run the real external end-to-end test only when you want Symphony to create disposable Linear
