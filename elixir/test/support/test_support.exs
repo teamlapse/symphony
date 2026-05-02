@@ -43,6 +43,7 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+          Application.delete_env(:symphony_elixir, :notification_sender)
           File.rm_rf(workflow_root)
         end)
 
@@ -118,6 +119,9 @@ defmodule SymphonyElixir.TestSupport do
           review_findings_path: ".symphony/review/latest.md",
           review_pass_status: "pass",
           review_changes_requested_status: "changes_requested",
+          notifications_enabled: false,
+          notifications_desktop: false,
+          notifications_slack_webhook_url: nil,
           codex_command: "codex app-server",
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           codex_thread_sandbox: "workspace-write",
@@ -167,6 +171,9 @@ defmodule SymphonyElixir.TestSupport do
     review_findings_path = Keyword.get(config, :review_findings_path)
     review_pass_status = Keyword.get(config, :review_pass_status)
     review_changes_requested_status = Keyword.get(config, :review_changes_requested_status)
+    notifications_enabled = Keyword.get(config, :notifications_enabled)
+    notifications_desktop = Keyword.get(config, :notifications_desktop)
+    notifications_slack_webhook_url = Keyword.get(config, :notifications_slack_webhook_url)
     codex_command = Keyword.get(config, :codex_command)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
     codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
@@ -221,6 +228,7 @@ defmodule SymphonyElixir.TestSupport do
           pass_status: review_pass_status,
           changes_requested_status: review_changes_requested_status
         }),
+        notifications_yaml(notifications_enabled, notifications_desktop, notifications_slack_webhook_url),
         "codex:",
         "  command: #{yaml_value(codex_command)}",
         "  approval_policy: #{yaml_value(codex_approval_policy)}",
@@ -335,6 +343,18 @@ defmodule SymphonyElixir.TestSupport do
       |> Enum.map_join("\n", &("    " <> &1))
 
     "  prompt: |\n#{indented}"
+  end
+
+  defp notifications_yaml(false, false, nil), do: nil
+
+  defp notifications_yaml(enabled, desktop, slack_webhook_url) do
+    [
+      "notifications:",
+      "  enabled: #{yaml_value(enabled)}",
+      "  desktop: #{yaml_value(desktop)}",
+      "  slack_webhook_url: #{yaml_value(slack_webhook_url)}"
+    ]
+    |> Enum.join("\n")
   end
 
   defp observability_yaml(enabled, refresh_ms, render_interval_ms) do

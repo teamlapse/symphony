@@ -248,6 +248,25 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Notifications do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:desktop, :boolean, default: false)
+      field(:slack_webhook_url, :string)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:enabled, :desktop, :slack_webhook_url], empty_values: [])
+    end
+  end
+
   defmodule Hooks do
     @moduledoc false
     use Ecto.Schema
@@ -334,6 +353,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     field(:agents, :map, default: %{})
     embeds_one(:review, Review, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:notifications, Notifications, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
@@ -427,6 +447,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:review, with: &Review.changeset/2)
+    |> cast_embed(:notifications, with: &Notifications.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
@@ -457,9 +478,22 @@ defmodule SymphonyElixir.Config.Schema do
       | target_branch: resolve_target_branch(settings.review.target_branch)
     }
 
+    notifications = %{
+      settings.notifications
+      | slack_webhook_url: resolve_secret_setting(settings.notifications.slack_webhook_url, nil)
+    }
+
     agents = normalize_optional_map(settings.agents) || %{}
 
-    %{settings | tracker: tracker, workspace: workspace, review: review, codex: codex, agents: agents}
+    %{
+      settings
+      | tracker: tracker,
+        workspace: workspace,
+        review: review,
+        notifications: notifications,
+        codex: codex,
+        agents: agents
+    }
   end
 
   defp normalize_keys(value) when is_map(value) do

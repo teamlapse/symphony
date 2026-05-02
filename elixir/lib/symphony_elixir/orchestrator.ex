@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, Notifications, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -351,6 +351,7 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
+        maybe_notify_issue_state_change(state, issue)
         terminate_running_issue(state, issue.id, true)
 
       !issue_routable_to_worker?(issue) ->
@@ -364,6 +365,7 @@ defmodule SymphonyElixir.Orchestrator do
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
+        maybe_notify_issue_state_change(state, issue)
         terminate_running_issue(state, issue.id, false)
     end
   end
@@ -407,12 +409,48 @@ defmodule SymphonyElixir.Orchestrator do
   defp refresh_running_issue_state(%State{} = state, %Issue{} = issue) do
     case Map.get(state.running, issue.id) do
       %{issue: _} = running_entry ->
+        maybe_notify_issue_state_change(running_entry, issue)
         %{state | running: Map.put(state.running, issue.id, %{running_entry | issue: issue})}
 
       _ ->
         state
     end
   end
+
+  defp maybe_notify_issue_state_change(%State{} = state, %Issue{id: issue_id} = issue)
+       when is_binary(issue_id) do
+    case Map.get(state.running, issue_id) do
+      nil -> :ok
+      running_entry -> maybe_notify_issue_state_change(running_entry, issue)
+    end
+  end
+
+  defp maybe_notify_issue_state_change(%{issue: %Issue{state: previous_state}}, %Issue{state: current_state} = issue) do
+    if changed_state?(previous_state, current_state) and human_review_state?(current_state) do
+      Notifications.human_review_required(issue, previous_state)
+    end
+
+    :ok
+  end
+
+  defp maybe_notify_issue_state_change(_running_entry, _issue), do: :ok
+
+  defp changed_state?(previous_state, current_state)
+       when is_binary(previous_state) and is_binary(current_state) do
+    normalize_issue_state(previous_state) != normalize_issue_state(current_state)
+  end
+
+  defp changed_state?(nil, current_state), do: non_empty_string?(current_state)
+  defp changed_state?(previous_state, nil), do: non_empty_string?(previous_state)
+  defp changed_state?(_previous_state, _current_state), do: false
+
+  defp non_empty_string?(value), do: is_binary(value) and String.trim(value) != ""
+
+  defp human_review_state?(state_name) when is_binary(state_name) do
+    normalize_issue_state(state_name) in ["human review", "symphony human review"]
+  end
+
+  defp human_review_state?(_state_name), do: false
 
   defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace) do
     case Map.get(state.running, issue_id) do

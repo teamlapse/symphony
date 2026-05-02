@@ -122,6 +122,91 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert plain =~ "agent review running (round 1/3)"
   end
 
+  test "orchestrator emits notifications only when human review is required" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: ["Todo", "In Progress", "Symphony Agent Review", "Symphony Human Review"],
+      notifications_enabled: true,
+      notifications_desktop: true,
+      notifications_slack_webhook_url: "https://hooks.slack.test/services/unit"
+    )
+
+    parent = self()
+
+    Application.put_env(:symphony_elixir, :notification_sender, fn channel, notification ->
+      send(parent, {:notification, channel, notification})
+      :ok
+    end)
+
+    issue_id = "issue-notifications"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "YAP-9",
+      title: "Notify status changes",
+      description: "Emit notifications",
+      state: "In Progress",
+      url: "https://example.org/issues/YAP-9"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :NotificationsOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      runtime_stage: nil,
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: DateTime.utc_now()
+    }
+
+    state_with_issue =
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+
+    :sys.replace_state(pid, fn _ -> state_with_issue end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :agent_review_started,
+         payload: %{round: 1, max_rounds: 3},
+         runtime_stage: "Agent Review",
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    refute_receive {:notification, _channel, _notification}, 50
+
+    refreshed_issue = %{issue | state: "Symphony Agent Review"}
+    state_after_agent_review = Orchestrator.reconcile_issue_states_for_test([refreshed_issue], :sys.get_state(pid))
+
+    refute_receive {:notification, _channel, _notification}, 50
+
+    human_review_issue = %{issue | state: "Symphony Human Review"}
+
+    _state_after_human_review =
+      Orchestrator.reconcile_issue_states_for_test([human_review_issue], state_after_agent_review)
+
+    assert_receive {:notification, :desktop, %{event: :human_review_required, state: "Symphony Human Review"}}
+    assert_receive {:notification, :slack, %{event: :human_review_required, state: "Symphony Human Review"}}
+  end
+
   test "orchestrator snapshot tracks codex thread totals and app-server pid" do
     issue_id = "issue-usage-snapshot"
 

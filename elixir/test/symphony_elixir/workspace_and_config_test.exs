@@ -795,6 +795,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert config.worker.max_concurrent_agents_per_host == nil
     assert config.agent.max_concurrent_agents == 10
+    assert config.notifications.enabled == false
+    assert config.notifications.desktop == false
+    assert config.notifications.slack_webhook_url == nil
     assert config.codex.command == "codex app-server"
 
     assert config.codex.approval_policy == %{
@@ -896,6 +899,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       observability_enabled: "maybe",
       observability_refresh_ms: %{bad: true},
       observability_render_interval_ms: %{bad: true},
+      notifications_enabled: "maybe",
+      notifications_desktop: "maybe",
       server_port: -1,
       server_host: 123
     )

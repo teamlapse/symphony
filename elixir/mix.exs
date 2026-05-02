@@ -27,6 +27,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.HttpServer,
           SymphonyElixir.StatusDashboard,
           SymphonyElixir.LogFile,
+          SymphonyElixir.Notifications,
           SymphonyElixir.StandaloneApplication,
           SymphonyElixir.Workspace,
           SymphonyElixirWeb.DashboardLive,

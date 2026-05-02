@@ -62,9 +62,9 @@ symphony run
 ```
 
 `symphony run` prompts for the repository URL, Linear project URL, Linear API key, target branch,
-dashboard port, and optional BuildBuddy API key. It clones the repository to read `WORKFLOW.md`,
-overlays the prompted runtime values, and deletes the run config, source checkout, logs, and
-workspaces when Symphony exits.
+dashboard port, optional BuildBuddy API key, and optional Slack incoming webhook URL for human-review
+notifications. It clones the repository to read `WORKFLOW.md`, overlays the prompted runtime values,
+and deletes the run config, source checkout, logs, and workspaces when Symphony exits.
 
 Existing environment variables are ignored while collecting these answers so every interactive run
 is explicit. Use `symphony run --repo-url ... --linear-project-url ...` style flags only when you
@@ -192,6 +192,11 @@ Notes:
   until the reviewer reports `status: pass` or configured limits are reached.
 - While the automated reviewer or review-feedback turn is running, the terminal and web dashboards
   show a runtime stage such as `Agent Review` or `Address Feedback` for that active issue.
+- `notifications.enabled` can send best-effort local macOS desktop notifications and Slack incoming
+  webhook messages when Symphony observes the issue move into `Human Review` or
+  `Symphony Human Review`. The workflow should only use those states after PR feedback is addressed
+  and CI is passing. In `symphony run`, desktop notifications are enabled and an entered Slack
+  webhook is passed as `$SYMPHONY_SLACK_WEBHOOK_URL`.
 - `review.target_branch` defaults to `origin/main`. It can be set to `$SYMPHONY_TARGET_BRANCH`;
   when that env var is unset Symphony falls back to `origin/main`, and bare branch names such as
   `release/2026` are normalized to `origin/release/2026`. Workspace hooks receive the resolved

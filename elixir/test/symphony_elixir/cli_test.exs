@@ -10,6 +10,7 @@ defmodule SymphonyElixir.CLITest do
     "LINEAR_API_KEY",
     "LINEAR_PROJECT_SLUG",
     "LINEAR_PROJECT_URL",
+    "SYMPHONY_SLACK_WEBHOOK_URL",
     "SYMPHONY_MANAGED_REPO_URL",
     "SYMPHONY_TARGET_BRANCH",
     "SYMPHONY_PORT",
@@ -194,6 +195,8 @@ defmodule SymphonyElixir.CLITest do
       "release/2026",
       "--buildbuddy-api-key",
       "bb_test",
+      "--slack-webhook-url",
+      "https://hooks.slack.test/services/test",
       "--port",
       "4123"
     ]
@@ -223,12 +226,16 @@ defmodule SymphonyElixir.CLITest do
     assert workflow =~ "Symphony Fixing CI"
     assert workflow =~ "open or update a draft PR"
     assert workflow =~ "mark the same PR ready for review"
+    assert workflow =~ "notifications:"
+    assert workflow =~ "desktop: true"
+    assert workflow =~ ~s(slack_webhook_url: "$SYMPHONY_SLACK_WEBHOOK_URL")
 
     assert logs_root == Path.join(run_root, "logs")
     assert System.get_env("LINEAR_API_KEY") == "lin_test"
     assert System.get_env("LINEAR_PROJECT_SLUG") == "littleapps-ui-framework-6609e93fb3b8"
     assert System.get_env("SYMPHONY_MANAGED_REPO_URL") == repo
     assert System.get_env("BUILDBUDDY_API_KEY") == "bb_test"
+    assert System.get_env("SYMPHONY_SLACK_WEBHOOK_URL") == "https://hooks.slack.test/services/test"
     refute System.get_env("SYMPHONY_TARGET_BRANCH")
   end
 
@@ -267,6 +274,7 @@ defmodule SymphonyElixir.CLITest do
         "lin_prompt",
         "release/2026",
         "bb_prompt",
+        "",
         "4124"
       ]
       |> Enum.join("\n")
@@ -282,6 +290,7 @@ defmodule SymphonyElixir.CLITest do
     assert output =~ "Linear API key:"
     assert output =~ "Target branch [main]:"
     assert output =~ "BuildBuddy API key:"
+    assert output =~ "Slack webhook URL:"
     assert output =~ "Dashboard port [4000]:"
     assert output =~ "Target branch: release/2026"
 
@@ -302,6 +311,7 @@ defmodule SymphonyElixir.CLITest do
     assert System.get_env("LINEAR_PROJECT_URL") == "https://linear.app/project/littleapps-ui-framework-6609e93fb3b8/issues"
     assert System.get_env("SYMPHONY_MANAGED_REPO_URL") == repo
     assert System.get_env("BUILDBUDDY_API_KEY") == "bb_prompt"
+    refute System.get_env("SYMPHONY_SLACK_WEBHOOK_URL")
     refute System.get_env("SYMPHONY_TARGET_BRANCH")
   end
 

@@ -13,6 +13,7 @@ defmodule SymphonyElixir.CLI do
     linear_api_key: :string,
     target_branch: :string,
     buildbuddy_api_key: :string,
+    slack_webhook_url: :string,
     port: :integer,
     help: :boolean
   ]
@@ -53,6 +54,7 @@ defmodule SymphonyElixir.CLI do
     "LINEAR_API_KEY",
     "LINEAR_PROJECT_SLUG",
     "LINEAR_PROJECT_URL",
+    "SYMPHONY_SLACK_WEBHOOK_URL",
     "SYMPHONY_MANAGED_REPO_URL",
     "SYMPHONY_PORT",
     "SYMPHONY_TARGET_BRANCH",
@@ -246,6 +248,7 @@ defmodule SymphonyElixir.CLI do
       --linear-api-key <key>        Linear API key
       --target-branch <branch>      Branch to fetch from origin (default: main)
       --buildbuddy-api-key <key>    Optional BuildBuddy API key for hooks
+      --slack-webhook-url <url>     Optional Slack incoming webhook for human-review notifications
       --port <port>                 Dashboard port (default: 4000)
     """
     |> String.trim()
@@ -372,6 +375,11 @@ defmodule SymphonyElixir.CLI do
       |> Keyword.get(:buildbuddy_api_key)
       |> prompt_secret_optional("BuildBuddy API key", nil)
 
+    slack_webhook_url =
+      opts
+      |> Keyword.get(:slack_webhook_url)
+      |> prompt_secret_optional("Slack webhook URL", nil)
+
     port =
       opts
       |> Keyword.get(:port)
@@ -386,6 +394,7 @@ defmodule SymphonyElixir.CLI do
          linear_project_slug: project_slug,
          target_branch: target_branch,
          buildbuddy_api_key: buildbuddy_api_key,
+         slack_webhook_url: slack_webhook_url,
          port: port
        }}
     end
@@ -629,7 +638,8 @@ defmodule SymphonyElixir.CLI do
        |> Map.put("tracker", merge_tracker(Map.get(front_matter, "tracker", %{}), answers))
        |> Map.put("workspace", merge_workspace(Map.get(front_matter, "workspace", %{}), run_paths))
        |> Map.put("hooks", merge_hooks(Map.get(front_matter, "hooks", %{}), answers))
-       |> Map.put("review", review)}
+       |> Map.put("review", review)
+       |> Map.put("notifications", merge_notifications(Map.get(front_matter, "notifications", %{}), answers))}
     end
   end
 
@@ -658,6 +668,22 @@ defmodule SymphonyElixir.CLI do
     |> Map.put("target_branch", "origin/#{answers.target_branch}")
     |> rewrite_review_prompt_file(source_path)
   end
+
+  defp merge_notifications(notifications, answers) when is_map(notifications) do
+    notifications
+    |> Map.put("enabled", true)
+    |> Map.put_new("desktop", true)
+    |> maybe_put_slack_webhook_url(answers.slack_webhook_url)
+  end
+
+  defp merge_notifications(_notifications, answers), do: merge_notifications(%{}, answers)
+
+  defp maybe_put_slack_webhook_url(notifications, slack_webhook_url)
+       when is_binary(slack_webhook_url) and slack_webhook_url != "" do
+    Map.put(notifications, "slack_webhook_url", "$SYMPHONY_SLACK_WEBHOOK_URL")
+  end
+
+  defp maybe_put_slack_webhook_url(notifications, _slack_webhook_url), do: notifications
 
   defp rewrite_review_prompt_file(review, source_path) do
     case Map.get(review, "prompt_file") do
@@ -762,6 +788,7 @@ defmodule SymphonyElixir.CLI do
         "SYMPHONY_WORKSPACE_ROOT" => run_paths.workspace_root
       }
       |> maybe_put_env("BUILDBUDDY_API_KEY", answers.buildbuddy_api_key)
+      |> maybe_put_env("SYMPHONY_SLACK_WEBHOOK_URL", answers.slack_webhook_url)
 
     clear_managed_run_environment()
     System.put_env(env)
