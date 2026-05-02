@@ -232,6 +232,57 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace hooks receive Symphony context and configured environment passthrough" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-hook-env-#{System.unique_integer([:positive])}"
+      )
+
+    previous_buildbuddy = System.get_env("BUILDBUDDY_API_KEY")
+    previous_target_branch = System.get_env("SYMPHONY_TEST_TARGET_BRANCH")
+
+    on_exit(fn ->
+      restore_env("BUILDBUDDY_API_KEY", previous_buildbuddy)
+      restore_env("SYMPHONY_TEST_TARGET_BRANCH", previous_target_branch)
+    end)
+
+    System.put_env("BUILDBUDDY_API_KEY", "bb-test-token")
+    System.put_env("SYMPHONY_TEST_TARGET_BRANCH", "release/2026")
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        review_enabled: true,
+        review_target_branch: "$SYMPHONY_TEST_TARGET_BRANCH",
+        hook_env_passthrough: ["BUILDBUDDY_API_KEY"],
+        hook_after_create: """
+        printf '%s\\n' "$SYMPHONY_WORKSPACE" > hook-env.txt
+        printf '%s\\n' "$SYMPHONY_ISSUE_IDENTIFIER" >> hook-env.txt
+        printf '%s\\n' "$SYMPHONY_HOOK_NAME" >> hook-env.txt
+        printf '%s\\n' "$BUILDBUDDY_API_KEY" >> hook-env.txt
+        printf '%s\\n' "$SYMPHONY_TARGET_BRANCH" >> hook-env.txt
+        """
+      )
+
+      issue = %Issue{
+        id: "issue-hook-env",
+        identifier: "MT-HOOK-ENV",
+        title: "Hook env",
+        state: "In Progress"
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+
+      assert File.read!(Path.join(workspace, "hook-env.txt")) ==
+               "#{workspace}\nMT-HOOK-ENV\nafter_create\nbb-test-token\norigin/release/2026\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace creates an empty directory when no bootstrap hook is configured" do
     workspace_root =
       Path.join(
@@ -885,6 +936,68 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server")
     assert Config.settings!().codex.command == "codex app-server"
+  end
+
+  test "config supports named executor and reviewer agent profiles" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      executor_agent: "claude",
+      agents: %{
+        "claude" => %{
+          kind: "exec",
+          command: "claude --print --dangerously-skip-permissions",
+          prompt_mode: "stdin",
+          env: %{CLAUDE_CONFIG_DIR: "/tmp/claude-config"},
+          turn_timeout_ms: 120_000,
+          stall_timeout_ms: 15_000
+        },
+        "reviewer" => %{
+          kind: "codex_app_server",
+          command: "codex --config 'model=\"gpt-5.5\"' app-server",
+          approval_policy: "never",
+          thread_sandbox: "danger-full-access",
+          turn_sandbox_policy: %{type: "dangerFullAccess"}
+        }
+      },
+      review_enabled: true,
+      review_prompt: "Use the repository review checklist.",
+      review_target_branch: "origin/main",
+      review_max_rounds: 2
+    )
+
+    executor_profile = Config.agent_profile!(:executor)
+    assert executor_profile.name == "claude"
+    assert executor_profile.kind == "exec"
+    assert executor_profile.command == "claude --print --dangerously-skip-permissions"
+    assert executor_profile.prompt_mode == "stdin"
+    assert executor_profile.env == %{"CLAUDE_CONFIG_DIR" => "/tmp/claude-config"}
+    assert executor_profile.turn_timeout_ms == 120_000
+    assert executor_profile.stall_timeout_ms == 15_000
+
+    reviewer_profile = Config.agent_profile!(:reviewer)
+    assert reviewer_profile.name == "reviewer"
+    assert reviewer_profile.kind == "codex_app_server"
+    assert reviewer_profile.command == "codex --config 'model=\"gpt-5.5\"' app-server"
+    assert reviewer_profile.approval_policy == "never"
+    assert reviewer_profile.thread_sandbox == "danger-full-access"
+    assert reviewer_profile.turn_sandbox_policy == %{"type" => "dangerFullAccess"}
+
+    assert Config.settings!().review.enabled == true
+    assert Config.settings!().review.max_rounds == 2
+    assert Config.review_prompt() =~ "repository review checklist"
+  end
+
+  test "config loads review prompt from workflow-relative file" do
+    prompt_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "REVIEW_PROMPT.md")
+    File.write!(prompt_path, "Use the external review checklist.\n")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      review_enabled: true,
+      review_prompt: "Inline prompt should be ignored.",
+      review_prompt_file: "REVIEW_PROMPT.md"
+    )
+
+    assert Config.settings!().review.prompt_file == "REVIEW_PROMPT.md"
+    assert Config.review_prompt() == "Use the external review checklist.\n"
   end
 
   test "config resolves $VAR references for env-backed secret and path values" do

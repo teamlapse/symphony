@@ -94,9 +94,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <article class="metric-card">
             <p class="metric-label">Total tokens</p>
             <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
-            <p class="metric-detail numeric">
-              In <%= format_int(@payload.codex_totals.input_tokens) %> / Out <%= format_int(@payload.codex_totals.output_tokens) %>
-            </p>
+            <div class="metric-detail metric-detail-stack numeric">
+              <span>Uncached in <%= format_int(@payload.codex_totals.uncached_input_tokens) %></span>
+              <span>Cached in <%= format_int(@payload.codex_totals.cached_input_tokens) %></span>
+              <span>Input total <%= format_int(@payload.codex_totals.input_tokens) %> / Out <%= format_int(@payload.codex_totals.output_tokens) %></span>
+            </div>
           </article>
 
           <article class="metric-card">
@@ -157,8 +159,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       </div>
                     </td>
                     <td>
-                      <span class={state_badge_class(entry.state)}>
-                        <%= entry.state %>
+                      <span class={state_badge_class(entry.runtime_stage || entry.state)}>
+                        <%= entry.runtime_stage || entry.state %>
                       </span>
                     </td>
                     <td>
@@ -196,7 +198,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="token-stack numeric">
                         <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
-                        <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
+                        <span class="muted">Uncached in: <%= format_int(entry.tokens.uncached_input_tokens) %></span>
+                        <span class="muted">Cached in: <%= format_int(entry.tokens.cached_input_tokens) %></span>
+                        <span class="muted">Input total: <%= format_int(entry.tokens.input_tokens) %> / Out: <%= format_int(entry.tokens.output_tokens) %></span>
                       </div>
                     </td>
                   </tr>

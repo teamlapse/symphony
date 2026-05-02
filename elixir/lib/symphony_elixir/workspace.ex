@@ -258,11 +258,14 @@ defmodule SymphonyElixir.Workspace do
         :ok
 
       command ->
+        issue_context = %{issue_id: nil, issue_identifier: Path.basename(workspace)}
+
         script =
           [
             remote_shell_assign("workspace", workspace),
             "if [ -d \"$workspace\" ]; then",
             "  cd \"$workspace\"",
+            indent_remote_script(hook_remote_env_exports(workspace, issue_context, "before_remove")),
             "  #{command}",
             "fi"
           ]
@@ -274,7 +277,7 @@ defmodule SymphonyElixir.Workspace do
             handle_hook_command_result(
               {output, status},
               workspace,
-              %{issue_id: nil, issue_identifier: Path.basename(workspace)},
+              issue_context,
               "before_remove"
             )
 
@@ -298,7 +301,11 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", command],
+          cd: workspace,
+          stderr_to_stdout: true,
+          env: hook_env(workspace, issue_context, hook_name)
+        )
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -319,7 +326,15 @@ defmodule SymphonyElixir.Workspace do
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
 
-    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
+    script =
+      [
+        hook_remote_env_exports(workspace, issue_context, hook_name),
+        "cd #{shell_escape(workspace)}",
+        command
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, timeout_ms) do
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
 
@@ -451,6 +466,43 @@ defmodule SymphonyElixir.Workspace do
 
   defp shell_escape(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
+  end
+
+  defp hook_env(workspace, issue_context, hook_name) do
+    symphony_env(workspace, issue_context, hook_name) ++ passthrough_env()
+  end
+
+  defp symphony_env(workspace, issue_context, hook_name) do
+    [
+      {"SYMPHONY_WORKSPACE", workspace},
+      {"SYMPHONY_HOOK_NAME", hook_name},
+      {"SYMPHONY_ISSUE_ID", to_string(issue_context.issue_id || "")},
+      {"SYMPHONY_ISSUE_IDENTIFIER", to_string(issue_context.issue_identifier || "")},
+      {"SYMPHONY_TARGET_BRANCH", Config.settings!().review.target_branch}
+    ]
+  end
+
+  defp passthrough_env do
+    Config.settings!().hooks.env_passthrough
+    |> Enum.flat_map(fn name ->
+      case System.get_env(name) do
+        nil -> []
+        value -> [{name, value}]
+      end
+    end)
+  end
+
+  defp hook_remote_env_exports(workspace, issue_context, hook_name) do
+    hook_env(workspace, issue_context, hook_name)
+    |> Enum.map_join("\n", fn {name, value} ->
+      "export #{name}=#{shell_escape(value)}"
+    end)
+  end
+
+  defp indent_remote_script(script) do
+    script
+    |> String.split("\n")
+    |> Enum.map_join("\n", &("  " <> &1))
   end
 
   defp worker_host_for_log(nil), do: "local"

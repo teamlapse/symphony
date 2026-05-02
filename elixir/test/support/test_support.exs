@@ -103,10 +103,21 @@ defmodule SymphonyElixir.TestSupport do
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
           worker_ssh_hosts: [],
           worker_max_concurrent_agents_per_host: nil,
+          executor_agent: "default",
           max_concurrent_agents: 10,
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
+          agents: nil,
+          review_enabled: false,
+          review_agent: "reviewer",
+          review_target_branch: "origin/main",
+          review_max_rounds: 3,
+          review_prompt: nil,
+          review_prompt_file: nil,
+          review_findings_path: ".symphony/review/latest.md",
+          review_pass_status: "pass",
+          review_changes_requested_status: "changes_requested",
           codex_command: "codex app-server",
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           codex_thread_sandbox: "workspace-write",
@@ -119,6 +130,7 @@ defmodule SymphonyElixir.TestSupport do
           hook_after_run: nil,
           hook_before_remove: nil,
           hook_timeout_ms: 60_000,
+          hook_env_passthrough: [],
           observability_enabled: true,
           observability_refresh_ms: 1_000,
           observability_render_interval_ms: 16,
@@ -140,10 +152,21 @@ defmodule SymphonyElixir.TestSupport do
     workspace_root = Keyword.get(config, :workspace_root)
     worker_ssh_hosts = Keyword.get(config, :worker_ssh_hosts)
     worker_max_concurrent_agents_per_host = Keyword.get(config, :worker_max_concurrent_agents_per_host)
+    executor_agent = Keyword.get(config, :executor_agent)
     max_concurrent_agents = Keyword.get(config, :max_concurrent_agents)
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
+    agents = Keyword.get(config, :agents)
+    review_enabled = Keyword.get(config, :review_enabled)
+    review_agent = Keyword.get(config, :review_agent)
+    review_target_branch = Keyword.get(config, :review_target_branch)
+    review_max_rounds = Keyword.get(config, :review_max_rounds)
+    review_prompt = Keyword.get(config, :review_prompt)
+    review_prompt_file = Keyword.get(config, :review_prompt_file)
+    review_findings_path = Keyword.get(config, :review_findings_path)
+    review_pass_status = Keyword.get(config, :review_pass_status)
+    review_changes_requested_status = Keyword.get(config, :review_changes_requested_status)
     codex_command = Keyword.get(config, :codex_command)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
     codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
@@ -156,6 +179,7 @@ defmodule SymphonyElixir.TestSupport do
     hook_after_run = Keyword.get(config, :hook_after_run)
     hook_before_remove = Keyword.get(config, :hook_before_remove)
     hook_timeout_ms = Keyword.get(config, :hook_timeout_ms)
+    hook_env_passthrough = Keyword.get(config, :hook_env_passthrough)
     observability_enabled = Keyword.get(config, :observability_enabled)
     observability_refresh_ms = Keyword.get(config, :observability_refresh_ms)
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
@@ -180,10 +204,23 @@ defmodule SymphonyElixir.TestSupport do
         "  root: #{yaml_value(workspace_root)}",
         worker_yaml(worker_ssh_hosts, worker_max_concurrent_agents_per_host),
         "agent:",
+        "  executor: #{yaml_value(executor_agent)}",
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
+        agents_yaml(agents),
+        review_yaml(%{
+          enabled: review_enabled,
+          agent: review_agent,
+          target_branch: review_target_branch,
+          max_rounds: review_max_rounds,
+          prompt: review_prompt,
+          prompt_file: review_prompt_file,
+          findings_path: review_findings_path,
+          pass_status: review_pass_status,
+          changes_requested_status: review_changes_requested_status
+        }),
         "codex:",
         "  command: #{yaml_value(codex_command)}",
         "  approval_policy: #{yaml_value(codex_approval_policy)}",
@@ -192,7 +229,14 @@ defmodule SymphonyElixir.TestSupport do
         "  turn_timeout_ms: #{yaml_value(codex_turn_timeout_ms)}",
         "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
-        hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
+        hooks_yaml(
+          hook_after_create,
+          hook_before_run,
+          hook_after_run,
+          hook_before_remove,
+          hook_timeout_ms,
+          hook_env_passthrough
+        ),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),
         "---",
@@ -225,12 +269,15 @@ defmodule SymphonyElixir.TestSupport do
 
   defp yaml_value(value), do: yaml_value(to_string(value))
 
-  defp hooks_yaml(nil, nil, nil, nil, timeout_ms), do: "hooks:\n  timeout_ms: #{yaml_value(timeout_ms)}"
+  defp hooks_yaml(nil, nil, nil, nil, timeout_ms, env_passthrough)
+       when env_passthrough in [nil, []],
+       do: "hooks:\n  timeout_ms: #{yaml_value(timeout_ms)}"
 
-  defp hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, timeout_ms) do
+  defp hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, timeout_ms, env_passthrough) do
     [
       "hooks:",
       "  timeout_ms: #{yaml_value(timeout_ms)}",
+      "  env_passthrough: #{yaml_value(env_passthrough)}",
       hook_entry("after_create", hook_after_create),
       hook_entry("before_run", hook_before_run),
       hook_entry("after_run", hook_after_run),
@@ -253,6 +300,41 @@ defmodule SymphonyElixir.TestSupport do
     ]
     |> Enum.reject(&(&1 in [nil, false]))
     |> Enum.join("\n")
+  end
+
+  defp agents_yaml(nil), do: nil
+
+  defp agents_yaml(agents) do
+    "agents: #{yaml_value(agents)}"
+  end
+
+  defp review_yaml(%{enabled: false, prompt: nil, prompt_file: nil}),
+    do: nil
+
+  defp review_yaml(%{} = review) do
+    [
+      "review:",
+      "  enabled: #{yaml_value(review.enabled)}",
+      "  agent: #{yaml_value(review.agent)}",
+      "  target_branch: #{yaml_value(review.target_branch)}",
+      "  max_rounds: #{yaml_value(review.max_rounds)}",
+      review.prompt_file && "  prompt_file: #{yaml_value(review.prompt_file)}",
+      "  findings_path: #{yaml_value(review.findings_path)}",
+      "  pass_status: #{yaml_value(review.pass_status)}",
+      "  changes_requested_status: #{yaml_value(review.changes_requested_status)}",
+      review.prompt && review_prompt_yaml(review.prompt)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp review_prompt_yaml(prompt) when is_binary(prompt) do
+    indented =
+      prompt
+      |> String.split("\n")
+      |> Enum.map_join("\n", &("    " <> &1))
+
+    "  prompt: |\n#{indented}"
   end
 
   defp observability_yaml(enabled, refresh_ms, render_interval_ms) do

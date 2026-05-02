@@ -195,7 +195,8 @@ Examples:
 - workspace root
 - active and terminal issue states
 - concurrency limits
-- coding-agent executable/args/timeouts
+- named coding-agent profiles, executable/args/timeouts, and provider settings
+- optional automated review loop settings
 - workspace hooks
 
 #### 4.1.4 Workspace
@@ -231,6 +232,9 @@ Fields:
 - `session_id` (string, `<thread_id>-<turn_id>`)
 - `thread_id` (string)
 - `turn_id` (string)
+- `agent_name` (string or null)
+- `agent_kind` (string or null, for example `codex_app_server` or `exec`)
+- `agent_role` (string or null, for example `executor` or `reviewer`)
 - `codex_app_server_pid` (string or null)
 - `last_codex_event` (string/enum or null)
 - `last_codex_timestamp` (timestamp or null)
@@ -332,6 +336,8 @@ Top-level keys:
 - `workspace`
 - `hooks`
 - `agent`
+- `agents`
+- `review`
 - `codex`
 
 Unknown keys SHOULD be ignored for forward compatibility.
@@ -358,6 +364,7 @@ Fields:
   - If `$VAR_NAME` resolves to an empty string, treat the key as missing.
 - `project_slug` (string)
   - REQUIRED for dispatch when `tracker.kind == "linear"`.
+  - MAY be `$VAR_NAME`.
 - `active_states` (list of strings)
   - Default: `Todo`, `In Progress`
 - `terminal_states` (list of strings)
@@ -404,11 +411,26 @@ Fields:
   - Applies to all workspace hooks.
   - Invalid values fail configuration validation.
   - Changes SHOULD be re-applied at runtime for future hook executions.
+- `env_passthrough` (list of environment variable names, OPTIONAL)
+  - Default: `[]`
+  - Named variables are copied from the Symphony host process environment into hook processes when
+    present. This is intended for values such as `BUILDBUDDY_API_KEY`.
+  - Implementations SHOULD also expose stable hook context variables:
+    - `SYMPHONY_WORKSPACE`
+    - `SYMPHONY_HOOK_NAME`
+    - `SYMPHONY_ISSUE_ID`
+    - `SYMPHONY_ISSUE_IDENTIFIER`
+    - `SYMPHONY_TARGET_BRANCH`
 
 #### 5.3.5 `agent` (object)
 
 Fields:
 
+- `executor` (string)
+  - Default: `default`
+  - Names the profile in `agents` used for implementation turns.
+  - If the named profile is absent and the value is `default`, implementations SHOULD use the
+    legacy `codex` block as the default Codex app-server profile.
 - `max_concurrent_agents` (integer)
   - Default: `10`
   - Changes SHOULD be re-applied at runtime and affect subsequent dispatch decisions.
@@ -424,7 +446,108 @@ Fields:
   - State keys are normalized (`lowercase`) for lookup.
   - Invalid entries (non-positive or non-numeric) are ignored.
 
-#### 5.3.6 `codex` (object)
+#### 5.3.6 `agents` (map of profile name -> object)
+
+Named profiles provide a portable agent layer. Implementations MAY support any provider kinds they
+document. This specification defines two common kinds:
+
+- `codex_app_server`
+  - Launches a Codex app-server compatible subprocess and communicates through the targeted
+    app-server protocol.
+- `exec`
+  - Launches a generic shell command in the workspace. The prompt is supplied by the documented
+    prompt mode, commonly stdin or a prompt-file environment variable.
+
+Common profile fields:
+
+- `kind` (string)
+  - Provider kind. If omitted in a custom profile, implementations MAY default to `exec`.
+- `command` (string shell command)
+  - Command launched in the per-issue workspace.
+- `turn_timeout_ms` (integer)
+  - Max wall-clock time for one turn.
+- `stall_timeout_ms` (integer)
+  - Max inactivity time used by orchestrator stall detection when the profile is the executor.
+- `session_reuse` (boolean)
+  - Default: `true`.
+  - If the provider exposes resumable session/thread IDs, implementations SHOULD reuse the same
+    executor session for continuation and review-feedback turns in the same worker lifetime, and
+    SHOULD persist/resume provider session IDs across retries when that provider makes it safe.
+- `env` (map string -> string)
+  - Extra environment variables for the launched command.
+- `settings` (map)
+  - Provider-specific settings.
+
+`codex_app_server` profile fields additionally mirror the legacy `codex` fields:
+
+- `approval_policy`
+- `thread_sandbox`
+- `turn_sandbox_policy`
+- `read_timeout_ms`
+
+`exec` profile fields:
+
+- `prompt_mode` (string)
+  - `stdin`: pipe the prompt into the command.
+  - `file`: write the prompt to a file and expose its path via `SYMPHONY_PROMPT_FILE`.
+  - `none`: launch the command without prompt plumbing; the command is responsible for obtaining
+    context from provider-specific settings.
+- Exec providers SHOULD expose stable turn metadata to launched commands:
+  - `SYMPHONY_PROMPT_FILE`
+  - `SYMPHONY_AGENT_PROFILE`
+  - `SYMPHONY_AGENT_SESSION_ID` (stable for the worker lifetime)
+  - `SYMPHONY_AGENT_TURN_ID`
+  - `SYMPHONY_AGENT_TURN_SESSION_ID`
+  Commands for resumable CLIs MAY use `SYMPHONY_AGENT_SESSION_ID` as their resume key.
+
+#### 5.3.7 `review` (object)
+
+Optional automated review loop configuration. When enabled, the worker starts a separate reviewer
+agent in the same workspace after an executor turn completes. The reviewer compares the branch
+against `target_branch` and writes a structured report. If findings are present, the report is fed
+back to the original executor session as another turn. The loop repeats until the reviewer reports
+no findings or configured limits are reached.
+
+Fields:
+
+- `enabled` (boolean)
+  - Default: `false`
+- `agent` (string)
+  - Default: `reviewer`
+  - Names the `agents` profile used for review turns. If `reviewer` is absent, implementations MAY
+    fall back to the default Codex profile for compatibility.
+- `target_branch` (string)
+  - Default: `origin/main`
+  - MAY be `$SYMPHONY_TARGET_BRANCH` or another environment-variable reference. If unset, the
+    implementation SHOULD fall back to `origin/main`; bare branch names SHOULD normalize to
+    `origin/<branch>`.
+- `max_rounds` (positive integer)
+  - Default: `3`
+  - Maximum reviewer rounds per executor completion.
+- `prompt` (string)
+  - Custom review rules/prompt. Implementations SHOULD combine this with mandatory output-format
+    instructions.
+- `prompt_file` (path string)
+  - Optional path to custom review rules/prompt. Relative paths resolve from the directory
+    containing `WORKFLOW.md`.
+  - If both `prompt_file` and `prompt` are set, `prompt_file` SHOULD take precedence.
+- `findings_path` (path relative to workspace)
+  - Default: `.symphony/review/latest.md`
+  - The reviewer MUST write the review report here.
+- `pass_status` (string)
+  - Default: `pass`
+- `changes_requested_status` (string)
+  - Default: `changes_requested`
+
+Review report contract:
+
+- The first non-blank line MUST be `status: <pass_status>` or
+  `status: <changes_requested_status>`.
+- `changes_requested` reports MUST include actionable feedback suitable to send directly back to
+  the executor.
+- The report path MUST remain inside the issue workspace.
+
+#### 5.3.8 `codex` (object, legacy/default profile)
 
 Fields:
 
@@ -453,6 +576,9 @@ fields locally if they want stricter startup checks.
 - `stall_timeout_ms` (integer)
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
+
+Implementations that support `agents` SHOULD treat `codex` as the backward-compatible source for the
+`default` `codex_app_server` profile when `agents.default` is not present.
 
 ### 5.4 Prompt Template Contract
 
@@ -526,8 +652,8 @@ Dynamic reload is REQUIRED:
 - The software MUST detect `WORKFLOW.md` changes.
 - On change, it MUST re-read and re-apply workflow config and prompt template without restart.
 - The software MUST attempt to adjust live behavior to the new config (for example polling
-  cadence, concurrency limits, active/terminal states, codex settings, workspace paths/hooks, and
-  prompt content for future runs).
+  cadence, concurrency limits, active/terminal states, agent profile settings, legacy Codex
+  settings, workspace paths/hooks, and prompt content for future runs).
 - Reloaded config applies to future dispatch, retry scheduling, reconciliation decisions, hook
   execution, and agent launches.
 - Implementations are not REQUIRED to restart in-flight agent sessions automatically when config
@@ -562,7 +688,9 @@ Validation checks:
 - `tracker.kind` is present and supported.
 - `tracker.api_key` is present after `$` resolution.
 - `tracker.project_slug` is present when REQUIRED by the selected tracker kind.
-- `codex.command` is present and non-empty.
+- `agent.executor` is present and non-empty.
+- The selected executor profile resolves to a supported provider kind.
+- `codex.command` is present and non-empty when the legacy default Codex profile is used.
 
 ### 6.4 Core Config Fields Summary (Cheat Sheet)
 
@@ -573,7 +701,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.kind`: string, REQUIRED, currently `linear`
 - `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
 - `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
-- `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear`
+- `tracker.project_slug`: string or `$VAR`, REQUIRED when `tracker.kind=linear`
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
 - `polling.interval_ms`: integer, default `30000`
@@ -583,17 +711,27 @@ not require recognizing or validating extension fields unless that extension is 
 - `hooks.after_run`: shell script or null
 - `hooks.before_remove`: shell script or null
 - `hooks.timeout_ms`: integer, default `60000`
+- `hooks.env_passthrough`: list of env var names, default `[]`
 - `agent.max_concurrent_agents`: integer, default `10`
+- `agent.executor`: string, default `"default"`
 - `agent.max_turns`: integer, default `20`
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
+- `agents`: map of named provider profiles, default `{}`
+- `review.enabled`: boolean, default `false`
+- `review.agent`: string, default `"reviewer"`
+- `review.target_branch`: string, default `"origin/main"`
+- `review.max_rounds`: integer, default `3`
+- `review.prompt`: string or null
+- `review.prompt_file`: string or null, resolved relative to `WORKFLOW.md` when not absolute
+- `review.findings_path`: workspace-relative path, default `.symphony/review/latest.md`
 - `codex.command`: shell command string, default `codex app-server`
 - `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
 - `codex.thread_sandbox`: Codex `SandboxMode` value, default implementation-defined
 - `codex.turn_sandbox_policy`: Codex `SandboxPolicy` value, default implementation-defined
 - `codex.turn_timeout_ms`: integer, default `3600000`
 - `codex.read_timeout_ms`: integer, default `5000`
-- `codex.stall_timeout_ms`: integer, default `300000`
+- `codex.stall_timeout_ms`: integer, default `300000` for the legacy default Codex profile
 
 ## 7. Orchestration State Machine
 
@@ -632,6 +770,11 @@ Important nuance:
 - The first turn SHOULD use the full rendered task prompt.
 - Continuation turns SHOULD send only continuation guidance to the existing thread, not resend the
   original task prompt that is already present in thread history.
+- If `review.enabled` is true, a separate reviewer agent SHOULD run in the same workspace after an
+  executor turn completes and before the worker treats the turn as ready for tracker handoff.
+- Review findings SHOULD be fed back to the original executor session as another turn, preserving
+  the existing workspace, branch, and provider session/thread when the provider supports that.
+- A passing review allows the normal active-state refresh and handoff flow to continue.
 - Once the worker exits normally, the orchestrator still schedules a short continuation retry
   (about 1 second) so it can re-check whether the issue remains active and needs another worker
   session.
@@ -645,12 +788,14 @@ A run attempt transitions through these phases:
 3. `LaunchingAgentProcess`
 4. `InitializingSession`
 5. `StreamingTurn`
-6. `Finishing`
-7. `Succeeded`
-8. `Failed`
-9. `TimedOut`
-10. `Stalled`
-11. `CanceledByReconciliation`
+6. `Reviewing`
+7. `ApplyingReviewFeedback`
+8. `Finishing`
+9. `Succeeded`
+10. `Failed`
+11. `TimedOut`
+12. `Stalled`
+13. `CanceledByReconciliation`
 
 Distinct terminal reasons are important because retry logic and logs differ.
 
@@ -673,8 +818,14 @@ Distinct terminal reasons are important because retry logic and logs differ.
   - Update aggregate runtime totals.
   - Schedule exponential-backoff retry.
 
-- `Codex Update Event`
-  - Update live session fields, token counters, and rate limits.
+- `Agent Update Event`
+  - Update live session fields, token counters, rate limits, and last observed provider activity.
+
+- `Automated Review Finding`
+  - Keep the worker in the same workspace.
+  - Send reviewer feedback to the executor as another turn on the same executor session when
+    possible.
+  - Repeat until the reviewer report passes or the configured review/turn limit is reached.
 
 - `Retry Timer Fired`
   - Re-fetch active candidates and attempt re-dispatch, or release claim if no longer eligible.
@@ -785,7 +936,7 @@ Part A: Stall detection
 - For each running issue, compute `elapsed_ms` since:
   - `last_codex_timestamp` if any event has been seen, else
   - `started_at`
-- If `elapsed_ms > codex.stall_timeout_ms`, terminate the worker and queue a retry.
+- If `elapsed_ms > <executor profile>.stall_timeout_ms`, terminate the worker and queue a retry.
 - If `stall_timeout_ms <= 0`, skip stall detection entirely.
 
 Part B: Tracker state refresh
@@ -797,7 +948,29 @@ Part B: Tracker state refresh
   - If tracker state is neither active nor terminal: terminate worker without workspace cleanup.
 - If state refresh fails, keep workers running and try again on the next tick.
 
-### 8.6 Startup Terminal Workspace Cleanup
+### 8.6 PR, CI, and Review Signal Ownership
+
+Human review can remain represented by the pull request, but Symphony-owned workflow policy SHOULD
+define how agents react to PR-layer signals.
+
+Recommended model:
+
+- Include the tracker state used for PR waiting (for example `Human Review`) in
+  `tracker.active_states` when agents are expected to poll CI/review state autonomously.
+- In that state, the workflow prompt SHOULD instruct the agent to inspect PR checks, CI failures,
+  review summaries, inline comments, and bot feedback.
+- If CI fails or actionable review feedback arrives, the agent SHOULD transition the ticket into
+  the workflow's incremental-fix state or continue in the same active state, update the existing
+  branch, rerun validation, push, and return to PR review only after checks and feedback are clear.
+- A separate `Rework` state MAY remain available for deliberate full restarts. Entering `Rework`
+  SHOULD discard the previous approach, close or abandon the existing PR as workflow policy defines,
+  remove stale workpad state, create a fresh branch from the target branch, and start over.
+- Implementations MAY add direct GitHub webhooks or API polling outside the agent, but this
+  specification does not require a particular GitHub integration. The required behavior is that the
+  workflow owns the state transitions and does not leave CI/review failures as unobserved terminal
+  handoffs.
+
+### 8.7 Startup Terminal Workspace Cleanup
 
 When the service starts:
 
@@ -905,15 +1078,19 @@ Invariant 3: Workspace key is sanitized.
 
 ## 10. Agent Runner Protocol (Coding Agent Integration)
 
-This section defines Symphony's language-neutral responsibilities when integrating a Codex
-app-server. The Codex app-server protocol for the targeted Codex version is the source of truth for
-protocol schemas, message payloads, transport framing, and method names.
+This section defines Symphony's language-neutral responsibilities when integrating coding agents
+through provider profiles. Providers MAY be Codex app-server, Claude/Cursor-style CLIs, or other
+commands, as long as the implementation documents the provider kind and prompt/session behavior.
+
+For `codex_app_server`, the Codex app-server protocol for the targeted Codex version is the source
+of truth for protocol schemas, message payloads, transport framing, and method names.
 
 Protocol source of truth:
 
-- Implementations MUST send messages that are valid for the targeted Codex app-server version.
-- Implementations MUST consult the targeted Codex app-server documentation or generated schema
-  instead of treating this specification as a protocol schema.
+- `codex_app_server` implementations MUST send messages that are valid for the targeted Codex
+  app-server version.
+- `codex_app_server` implementations MUST consult the targeted Codex app-server documentation or
+  generated schema instead of treating this specification as a protocol schema.
 - If this specification appears to conflict with the targeted Codex app-server protocol, the Codex
   protocol controls protocol shape and transport behavior.
 - Symphony-specific requirements in this section still control orchestration behavior, workspace
@@ -923,16 +1100,18 @@ Protocol source of truth:
 
 Subprocess launch parameters:
 
-- Command: `codex.command`
-- Invocation: `bash -lc <codex.command>`
+- Command: selected `agents[agent.executor].command`, or legacy `codex.command` for the default
+  Codex profile.
+- Invocation: `bash -lc <command>` unless the provider documents another launch mechanism.
 - Working directory: workspace path
-- Transport/framing: the protocol transport required by the targeted Codex app-server version
+- Transport/framing: provider-specific
 
 Notes:
 
-- The default command is `codex app-server`.
+- The legacy default command is `codex app-server`.
+- Generic CLI providers SHOULD receive the prompt by stdin or a prompt file path.
 - Approval policy, sandbox policy, cwd, prompt input, and OPTIONAL tool declarations are supplied
-  using fields supported by the targeted Codex app-server version.
+  using provider-supported fields or command settings.
 
 RECOMMENDED additional process settings:
 
@@ -942,49 +1121,64 @@ RECOMMENDED additional process settings:
 
 Reference: https://developers.openai.com/codex/app-server/
 
-Startup MUST follow the targeted Codex app-server contract. Symphony additionally requires the
-client to:
+Provider startup MUST follow the selected provider's documented contract. Symphony additionally
+requires the client to:
 
-- Start the app-server subprocess in the per-issue workspace.
-- Initialize the app-server session using the targeted Codex app-server protocol.
-- Create or resume a coding-agent thread according to the targeted protocol.
-- Supply the absolute per-issue workspace path as the thread/turn working directory wherever the
-  targeted protocol accepts cwd.
+- Start the agent subprocess in the per-issue workspace.
+- Initialize or resume an agent session according to the provider protocol.
+- Create or resume a coding-agent thread/session according to the provider protocol when supported.
+- Supply the absolute per-issue workspace path as the working directory wherever the provider
+  accepts cwd.
 - Start the first turn with the rendered issue prompt.
-- Start later in-worker continuation turns on the same live thread with continuation guidance rather
-  than resending the original issue prompt.
+- Start later in-worker continuation and review-feedback turns on the same live executor
+  thread/session when the provider supports reuse, using continuation guidance rather than resending
+  the original issue prompt.
 - Supply the implementation's documented approval and sandbox policy using fields supported by the
-  targeted protocol.
-- Include issue-identifying metadata, such as `<issue.identifier>: <issue.title>`, when the targeted
-  protocol supports turn or session titles.
-- Advertise implemented client-side tools using the targeted protocol.
+  provider.
+- Include issue-identifying metadata, such as `<issue.identifier>: <issue.title>`, when the provider
+  supports turn or session titles.
+- Advertise implemented client-side tools using the provider protocol.
 
 Session identifiers:
 
-- Extract `thread_id` from the thread identity returned by the targeted Codex app-server protocol.
-- Extract `turn_id` from each turn identity returned by the targeted Codex app-server protocol.
-- Emit `session_id = "<thread_id>-<turn_id>"`
-- Reuse the same `thread_id` for all continuation turns inside one worker run
+- Extract `thread_id` or equivalent from the provider when available.
+- Extract `turn_id` or equivalent from each turn when available.
+- Emit `session_id = "<thread_id>-<turn_id>"` when both are available, or a stable
+  provider-specific equivalent.
+- Reuse the same executor `thread_id` for all continuation and review-feedback turns inside one
+  worker run when the provider supports it.
+- Persist provider session IDs only when the provider documents safe cross-process resume semantics.
 
 ### 10.3 Streaming Turn Processing
 
-The client processes app-server updates according to the targeted Codex app-server protocol until
-the active turn terminates.
+The client processes provider updates until the active turn terminates.
 
 Completion conditions:
 
-- Targeted-protocol turn completion signal -> success
-- Targeted-protocol turn failure signal -> failure
-- Targeted-protocol turn cancellation signal -> failure
+- Provider turn completion signal or zero exit status -> success
+- Provider turn failure signal or non-zero exit status -> failure
+- Provider cancellation signal -> failure
 - turn timeout (`turn_timeout_ms`) -> failure
 - subprocess exit -> failure
 
 Continuation processing:
 
 - If the worker decides to continue after a successful turn, it SHOULD start another turn on the same
-  live thread using the targeted protocol.
-- The app-server subprocess SHOULD remain alive across those continuation turns and be stopped only
-  when the worker run is ending.
+  live executor session using the provider protocol when supported.
+- Long-lived provider subprocesses SHOULD remain alive across continuation/review-feedback turns and
+  be stopped only when the worker run is ending.
+
+Automated review processing:
+
+- If `review.enabled` is true, start a reviewer session after an executor turn completes.
+- The reviewer session MUST use the same workspace and ticket context.
+- The reviewer SHOULD compare the current branch to `review.target_branch` and write
+  `review.findings_path`.
+- If the report status is `changes_requested`, send the report content back to the executor as a
+  review-feedback turn and then run the reviewer again.
+- If the report status is `pass`, continue to the normal tracker-state refresh/handoff path.
+- If the report is missing, malformed, or review limits are exhausted with findings still present,
+  the worker outcome is failure and normal retry handling applies.
 
 Transport handling requirements:
 
@@ -994,12 +1188,12 @@ Transport handling requirements:
 
 ### 10.4 Emitted Runtime Events (Upstream to Orchestrator)
 
-The app-server client emits structured events to the orchestrator callback. Each event SHOULD
-include:
+The provider client emits structured events to the orchestrator callback. Each event SHOULD include:
 
 - `event` (enum/string)
 - `timestamp` (UTC timestamp)
 - `codex_app_server_pid` (if available)
+- `agent_name` and `agent_kind` when available
 - OPTIONAL `usage` map (token counts)
 - payload fields as needed
 
@@ -1098,9 +1292,11 @@ User-input-required policy:
 
 Timeouts:
 
-- `codex.read_timeout_ms`: request/response timeout during startup and sync requests
-- `codex.turn_timeout_ms`: total turn stream timeout
-- `codex.stall_timeout_ms`: enforced by orchestrator based on event inactivity
+- `<profile>.read_timeout_ms` or legacy `codex.read_timeout_ms`: request/response timeout during
+  startup and sync requests when the provider has sync protocol requests.
+- `<profile>.turn_timeout_ms` or legacy `codex.turn_timeout_ms`: total turn timeout.
+- `<executor profile>.stall_timeout_ms` or legacy `codex.stall_timeout_ms`: enforced by
+  orchestrator based on event inactivity.
 
 Error mapping (RECOMMENDED normalized categories):
 
@@ -1925,7 +2121,7 @@ Validation profiles:
 - `Real Integration Profile`: environment-dependent smoke/integration checks RECOMMENDED before
   production use.
 
-Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bullets that begin with
+Unless otherwise noted, Sections 17.1 through 17.8 are `Core Conformance`. Bullets that begin with
 `If ... is implemented` are `Extension Conformance`.
 
 ### 17.1 Workflow and Config Parsing
@@ -1945,6 +2141,10 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `$VAR` resolution works for tracker API key and path values
 - `~` path expansion works
 - `codex.command` is preserved as a shell command string
+- `agent.executor` selects a named profile from `agents`
+- Missing `agents.default` falls back to the legacy `codex` block
+- Named profile fields preserve provider-specific settings for pass-through launch
+- `review` settings parse with documented defaults
 - Per-state concurrency override map normalizes state names and ignores invalid values
 - Prompt template renders `issue` and `attempt`
 - Prompt rendering fails on unknown variables (strict mode)
@@ -1961,6 +2161,8 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `before_run` hook runs before each attempt and failure/timeouts abort the current attempt
 - `after_run` hook runs after each attempt and failure/timeouts are logged and ignored
 - `before_remove` hook runs on cleanup and failures/timeouts are ignored
+- Hook context env vars are available to hook scripts
+- Configured `hooks.env_passthrough` variables are forwarded to hook scripts when present
 - Workspace path sanitization and root containment invariants are enforced before agent launch
 - Agent launch uses the per-issue workspace path as cwd and rejects out-of-root paths
 
@@ -1995,10 +2197,11 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   limits
 - If a snapshot API is implemented, timeout/unavailable cases are surfaced
 
-### 17.5 Coding-Agent App-Server Client
+### 17.5 Coding-Agent Provider Client
 
-- Launch command uses workspace cwd and invokes `bash -lc <codex.command>`
-- Session startup follows the targeted Codex app-server protocol.
+- Provider launch command uses workspace cwd and invokes the configured profile command.
+- Generic `exec` provider supplies prompts using the documented prompt mode.
+- `codex_app_server` session startup follows the targeted Codex app-server protocol.
 - Client identity/capability payloads are valid when the targeted Codex app-server protocol requires
   them.
 - Policy-related startup payloads use the implementation's documented approval/sandbox settings
@@ -2024,7 +2227,20 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   - invalid arguments, missing auth, and transport failures return structured failure payloads
   - unsupported tool names still fail without stalling the session
 
-### 17.6 Observability
+### 17.6 Automated Agent Review Loop
+
+- When `review.enabled=false`, executor behavior is unchanged.
+- When `review.enabled=true`, the worker starts a separate reviewer profile in the same workspace
+  after executor completion.
+- Reviewer report path is constrained to the workspace.
+- `status: pass` allows normal handoff processing to continue.
+- `status: changes_requested` sends findings back to the original executor session as another turn.
+- Review-feedback turns reuse the existing executor session when the provider supports session
+  reuse.
+- The review loop repeats until pass or until `review.max_rounds` / `agent.max_turns` is exhausted.
+- Missing or malformed review reports fail the worker so normal retry handling applies.
+
+### 17.7 Observability
 
 - Validation failures are operator-visible
 - Structured logging includes issue/session context fields
@@ -2035,7 +2251,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - If humanized event summaries are implemented, they cover key wrapper/agent event classes without
   changing orchestrator behavior
 
-### 17.7 CLI and Host Lifecycle
+### 17.8 CLI and Host Lifecycle
 
 - CLI accepts a positional workflow path argument (`path-to-WORKFLOW.md`)
 - CLI uses `./WORKFLOW.md` when no workflow path argument is provided
@@ -2044,7 +2260,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - CLI exits with success when application starts and shuts down normally
 - CLI exits nonzero when startup fails or the host process exits abnormally
 
-### 17.8 Real Integration Profile (RECOMMENDED)
+### 17.9 Real Integration Profile (RECOMMENDED)
 
 These checks are RECOMMENDED for production readiness and MAY be skipped in CI when credentials,
 network access, or external service permissions are unavailable.
@@ -2076,11 +2292,14 @@ Use the same validation profiles as Section 17:
 - Workspace manager with sanitized per-issue workspaces
 - Workspace lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`)
 - Hook timeout config (`hooks.timeout_ms`, default `60000`)
-- Coding-agent app-server subprocess client with JSON line protocol
-- Codex launch command config (`codex.command`, default `codex app-server`)
+- Portable coding-agent profile selection (`agent.executor` + `agents`)
+- Backward-compatible Codex launch command config (`codex.command`, default `codex app-server`)
+- Coding-agent provider subprocess client with workspace cwd enforcement
+- Codex app-server provider with JSON line protocol
 - Strict prompt rendering with `issue` and `attempt` variables
 - Exponential retry queue with continuation retries after normal exit
 - Configurable retry backoff cap (`agent.max_retry_backoff_ms`, default 5m)
+- Optional automated reviewer profile loop (`review`) that can feed findings back to the executor
 - Reconciliation that stops runs on terminal/non-active tracker states
 - Workspace cleanup for terminal issues (startup sweep + active transition)
 - Structured logs with `issue_id`, `issue_identifier`, and `session_id`
@@ -2098,10 +2317,11 @@ Use the same validation profiles as Section 17:
 - TODO: Add first-class tracker write APIs (comments/state transitions) in the orchestrator instead
   of only via agent tools.
 - TODO: Add pluggable issue tracker adapters beyond Linear.
+- TODO: Add direct GitHub webhook/API state ingestion outside the agent prompt loop.
 
 ### 18.3 Operational Validation Before Production (RECOMMENDED)
 
-- Run the `Real Integration Profile` from Section 17.8 with valid credentials and network access.
+- Run the `Real Integration Profile` from Section 17.9 with valid credentials and network access.
 - Verify hook execution and workflow path resolution on the target host OS/shell environment.
 - If the OPTIONAL HTTP server is shipped, verify the configured port behavior and loopback/default
   bind expectations on the target environment.

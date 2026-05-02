@@ -128,6 +128,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
+      field(:executor, :string, default: "default")
       field(:max_concurrent_agents, :integer, default: 10)
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
@@ -139,9 +140,16 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
+        [
+          :executor,
+          :max_concurrent_agents,
+          :max_turns,
+          :max_retry_backoff_ms,
+          :max_concurrent_agents_by_state
+        ],
         empty_values: []
       )
+      |> validate_required([:executor])
       |> validate_number(:max_concurrent_agents, greater_than: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
@@ -199,6 +207,47 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Review do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:agent, :string, default: "reviewer")
+      field(:target_branch, :string, default: "origin/main")
+      field(:max_rounds, :integer, default: 3)
+      field(:prompt, :string)
+      field(:prompt_file, :string)
+      field(:findings_path, :string, default: ".symphony/review/latest.md")
+      field(:pass_status, :string, default: "pass")
+      field(:changes_requested_status, :string, default: "changes_requested")
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :enabled,
+          :agent,
+          :target_branch,
+          :max_rounds,
+          :prompt,
+          :prompt_file,
+          :findings_path,
+          :pass_status,
+          :changes_requested_status
+        ],
+        empty_values: []
+      )
+      |> validate_required([:agent, :target_branch, :findings_path, :pass_status, :changes_requested_status])
+      |> validate_number(:max_rounds, greater_than: 0)
+    end
+  end
+
   defmodule Hooks do
     @moduledoc false
     use Ecto.Schema
@@ -211,13 +260,29 @@ defmodule SymphonyElixir.Config.Schema do
       field(:after_run, :string)
       field(:before_remove, :string)
       field(:timeout_ms, :integer, default: 60_000)
+      field(:env_passthrough, {:array, :string}, default: [])
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:after_create, :before_run, :after_run, :before_remove, :timeout_ms], empty_values: [])
+      |> cast(
+        attrs,
+        [:after_create, :before_run, :after_run, :before_remove, :timeout_ms, :env_passthrough],
+        empty_values: []
+      )
       |> validate_number(:timeout_ms, greater_than: 0)
+      |> validate_change(:env_passthrough, &validate_env_names/2)
+    end
+
+    defp validate_env_names(:env_passthrough, values) when is_list(values) do
+      Enum.flat_map(values, fn value ->
+        if is_binary(value) and String.match?(value, ~r/^[A-Za-z_][A-Za-z0-9_]*$/) do
+          []
+        else
+          [env_passthrough: "must contain environment variable names"]
+        end
+      end)
     end
   end
 
@@ -267,6 +332,8 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
+    field(:agents, :map, default: %{})
+    embeds_one(:review, Review, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
@@ -353,12 +420,13 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp changeset(attrs) do
     %__MODULE__{}
-    |> cast(attrs, [])
+    |> cast(attrs, [:agents])
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
+    |> cast_embed(:review, with: &Review.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
@@ -369,6 +437,7 @@ defmodule SymphonyElixir.Config.Schema do
     tracker = %{
       settings.tracker
       | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
+        project_slug: resolve_secret_setting(settings.tracker.project_slug, nil),
         assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
     }
 
@@ -383,7 +452,14 @@ defmodule SymphonyElixir.Config.Schema do
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    review = %{
+      settings.review
+      | target_branch: resolve_target_branch(settings.review.target_branch)
+    }
+
+    agents = normalize_optional_map(settings.agents) || %{}
+
+    %{settings | tracker: tracker, workspace: workspace, review: review, codex: codex, agents: agents}
   end
 
   defp normalize_keys(value) when is_map(value) do
@@ -421,6 +497,26 @@ defmodule SymphonyElixir.Config.Schema do
       resolved -> resolved
     end
   end
+
+  defp resolve_target_branch(value) when is_binary(value) do
+    value
+    |> resolve_env_value("origin/main")
+    |> normalize_target_branch()
+  end
+
+  defp normalize_target_branch(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> case do
+      "" -> "origin/main"
+      "origin/" <> _branch = remote_branch -> remote_branch
+      "refs/remotes/origin/" <> branch -> "origin/" <> branch
+      "refs/heads/" <> branch -> "origin/" <> branch
+      branch -> "origin/" <> branch
+    end
+  end
+
+  defp normalize_target_branch(_value), do: "origin/main"
 
   defp resolve_path_value(value, default) when is_binary(value) do
     case normalize_path_token(value) do
