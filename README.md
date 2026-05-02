@@ -27,8 +27,9 @@ curl -fsSL https://raw.githubusercontent.com/teamlapse/symphony/main/install.sh 
 symphony run
 ```
 
-The installer is idempotent: if `symphony` is already on `PATH`, it updates that binary in place;
-otherwise it installs to `~/.local/bin` unless `SYMPHONY_INSTALL_DIR` is set.
+The installer is idempotent: if `symphony` is already on `PATH`, it updates that binary in place
+and clears Symphony's cached runtime; otherwise it installs to `~/.local/bin` unless
+`SYMPHONY_INSTALL_DIR` is set.
 `symphony run` starts a fresh ephemeral session and prompts for the repository URL, Linear project
 URL, Linear API key, target branch, dashboard port, optional BuildBuddy API key, and optional Slack
 incoming webhook URL for human-review notifications.

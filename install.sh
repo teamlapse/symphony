@@ -26,6 +26,22 @@ download() {
   fi
 }
 
+clear_burrito_cache() {
+  cache_root="${HOME}/Library/Application Support/.burrito"
+
+  [ -d "$cache_root" ] || return 0
+
+  if command -v pgrep >/dev/null 2>&1 && pgrep -f "${cache_root}/symphony_erts-" >/dev/null 2>&1; then
+    die "a cached Symphony runtime is running; stop Symphony and rerun the installer"
+  fi
+
+  set -- "$cache_root"/symphony_erts-*
+  [ -e "$1" ] || return 0
+
+  rm -rf "$@" || die "failed to clear Symphony runtime cache in ${cache_root}"
+  printf 'Cleared Symphony runtime cache in %s\n' "$cache_root"
+}
+
 need curl
 need tar
 need shasum
@@ -74,6 +90,8 @@ else
   sudo cp "${tmp_dir}/${BIN_NAME}" "$install_path"
   sudo chmod 755 "$install_path"
 fi
+
+clear_burrito_cache
 
 printf 'Installed %s to %s\n' "$BIN_NAME" "$install_path"
 

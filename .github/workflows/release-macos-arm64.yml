@@ -117,3 +117,13 @@ jobs:
           draft: false
           prerelease: false
           make_latest: true
+
+      - name: Verify published installer
+        run: |
+          set -euo pipefail
+
+          install_dir="${RUNNER_TEMP}/symphony-bin"
+          SYMPHONY_INSTALL_DIR="$install_dir" artifacts/install.sh
+
+          "${install_dir}/symphony" run --help | tee "${RUNNER_TEMP}/symphony-help.txt"
+          grep -q -- "--slack-webhook-url" "${RUNNER_TEMP}/symphony-help.txt"
