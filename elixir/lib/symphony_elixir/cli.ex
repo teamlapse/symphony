@@ -707,11 +707,13 @@ defmodule SymphonyElixir.CLI do
       - `In Progress` -> move to `Symphony In Progress` and continue from the current PR/workpad state.
       - `Human Review` -> treat as `Symphony Human Review`.
     - Keep a single `## Codex Workpad` Linear comment current throughout the run.
-    - Move the issue to `Symphony Agent Review` after implementation, validation, push, and PR creation.
-    - Move the issue to `Symphony Address Feedback` when PR review or Greptile comments need code or a justified reply.
+    - After implementation and local validation, open or update a draft PR, attach it to the issue, move the issue to `Symphony Agent Review`, and leave the PR as draft so internal automated agent review can run.
+    - Do not request external/human review while the issue is in `Symphony Agent Review`.
+    - If internal agent review requests changes, move the issue to `Symphony Address Feedback`, address the findings on the same branch/draft PR, rerun validation, push, and return to `Symphony Agent Review`.
+    - Once internal agent review passes and execution resumes, mark the same PR ready for review; do not open a duplicate PR.
+    - Move the issue to `Symphony Address Feedback` when ready PR review, human review, or Greptile comments need code or a justified reply.
     - Move the issue to `Symphony Fixing CI` when PR checks fail.
-    - Move the issue to `Symphony Human Review` only after internal agent review passes, PR checks are green, and actionable PR comments are resolved.
-    - Open ready PRs as non-draft unless the issue explicitly asks for a draft.
+    - Move the issue to `Symphony Human Review` only after the PR is ready for review, checks are green, and actionable PR comments are resolved.
     """
   end
 

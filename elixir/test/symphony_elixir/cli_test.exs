@@ -220,6 +220,8 @@ defmodule SymphonyElixir.CLITest do
     assert workflow =~ "bazelisk clean --expunge_async || true"
     assert workflow =~ "Symphony Address Feedback"
     assert workflow =~ "Symphony Fixing CI"
+    assert workflow =~ "open or update a draft PR"
+    assert workflow =~ "mark the same PR ready for review"
 
     assert logs_root == Path.join(run_root, "logs")
     assert System.get_env("LINEAR_API_KEY") == "lin_test"

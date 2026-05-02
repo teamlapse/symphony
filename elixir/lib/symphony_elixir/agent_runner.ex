@@ -165,6 +165,7 @@ defmodule SymphonyElixir.AgentRunner do
     - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
     - Resume from the current workspace and workpad state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
+    - If automated agent review is enabled, the configured review loop has passed immediately before this continuation. If the issue is in Agent Review, mark the existing draft PR ready for review and continue the external PR checks/reviews flow.
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
     """
   end

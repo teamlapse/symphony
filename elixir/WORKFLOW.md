@@ -5,6 +5,9 @@ tracker:
   active_states:
     - Todo
     - In Progress
+    - Agent Review
+    - Address Feedback
+    - Fixing CI
     - Human Review
     - Merging
     - Rework
@@ -135,8 +138,11 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - `Backlog` -> out of scope for this workflow; do not modify.
 - `Todo` -> queued; immediately transition to `In Progress` before active work.
   - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `Human Review`).
-- `In Progress` -> implementation actively underway.
-- `Human Review` -> PR is attached and validated; poll PR checks/reviews and react to new required changes.
+- `In Progress` -> implementation actively underway before a PR is ready for internal review.
+- `Agent Review` -> draft PR is attached and internal automated agent review is running or being re-run.
+- `Address Feedback` -> internal agent review, Greptile, or human review requested code changes or a justified reply.
+- `Fixing CI` -> PR checks failed and the agent is actively fixing them.
+- `Human Review` -> non-draft PR is attached and validated; poll PR checks/reviews and react to new required changes.
 - `Merging` -> approved by human; execute the `land` skill flow (do not call `gh pr merge` directly).
 - `Rework` -> explicit full restart requested; discard the previous approach and start over.
 - `Done` -> terminal state; no further action required.
@@ -150,6 +156,9 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - `Todo` -> immediately move to `In Progress`, then ensure bootstrap workpad comment exists (create if missing), then start execution flow.
      - If PR is already attached, start by reviewing all open PR comments and deciding required changes vs explicit pushback responses.
    - `In Progress` -> continue execution flow from current scratchpad comment.
+   - `Agent Review` -> keep the attached PR as draft, wait for internal automated agent review to pass, then mark the same PR ready and continue the external review/check flow.
+   - `Address Feedback` -> address the listed review findings on the existing branch/PR, rerun validation, push, and return to `Agent Review` for internal findings or `Human Review` for external PR findings.
+   - `Fixing CI` -> fix failing PR checks on the existing branch/PR, rerun validation, push, and return to the appropriate review state.
    - `Human Review` -> poll PR checks/reviews; if there are no new signals, wait; if CI/review requires changes, run the incremental feedback flow.
    - `Merging` -> on entry, open and follow `.codex/skills/land/SKILL.md`; do not call `gh pr merge` directly.
    - `Rework` -> run rework flow.
@@ -222,7 +231,7 @@ Use this only when completion is blocked by missing required tools or missing au
   - exact human action needed to unblock.
 - Keep the brief concise and action-oriented; do not add extra top-level comments outside the workpad.
 
-## Step 2: Execution phase (Todo -> In Progress -> Human Review)
+## Step 2: Execution phase (Todo -> In Progress -> Agent Review -> Human Review)
 
 1.  Determine current repo state (`branch`, `git status`, `HEAD`) and verify the kickoff `pull` sync result is already recorded in the workpad before implementation continues.
 2.  If current issue state is `Todo`, move it to `In Progress`; otherwise leave the current state unchanged.
@@ -244,8 +253,10 @@ Use this only when completion is blocked by missing required tools or missing au
     - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
 6.  Re-check all acceptance criteria and close any gaps.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
-8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
+8.  Open or update a draft PR, then attach the PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).
+    - Keep the PR as draft until the internal automated agent review loop passes.
+    - Do not open a duplicate PR when moving from draft to external review; mark the same PR ready for review.
 9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
 10. Update the workpad comment with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.
@@ -253,16 +264,20 @@ Use this only when completion is blocked by missing required tools or missing au
     - Do not include PR URL in the workpad comment; keep PR linkage on the issue via attachment/link fields.
     - Add a short `### Confusions` section at the bottom when any part of task execution was unclear/confusing, with concise bullets.
     - Do not post any additional completion summary comment.
-11. Before moving to `Human Review`, wait for the configured automated agent review loop to pass, then poll PR feedback and checks:
+11. Move the issue to `Agent Review` and keep the PR draft so the configured automated agent review loop can run.
+12. After the configured automated agent review loop passes and execution resumes, mark the draft PR ready for review, then poll PR feedback and checks:
     - Read the PR `Manual QA Plan` comment (when present) and use it to sharpen UI/runtime test coverage for the current change.
     - Run the full PR feedback sweep protocol.
     - Confirm PR checks are passing (green) after the latest changes.
     - Confirm every required ticket-provided validation/test-plan item is explicitly marked complete in the workpad.
+    - If internal agent review requested changes, move to `Address Feedback`, address them on the same draft PR, rerun validation, push, and return to `Agent Review`.
+    - If Greptile or human review requests changes after the PR is ready, move to `Address Feedback`, address or explicitly push back, rerun validation, push, and return to this feedback sweep.
+    - If CI fails after the PR is ready, move to `Fixing CI`, address it, rerun validation, push, and return to this feedback sweep.
     - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
-12. Only then move issue to `Human Review`.
+13. Only then move issue to `Human Review`.
     - Exception: if blocked by missing required non-GitHub tools/auth per the blocked-access escape hatch, move to `Human Review` with the blocker brief and explicit unblock actions.
-13. For `Todo` tickets that already had a PR attached at kickoff:
+14. For `Todo` tickets that already had a PR attached at kickoff:
     - Ensure all existing PR feedback was reviewed and resolved, including inline review comments (code changes or explicit, justified pushback response).
     - Ensure branch was pushed with any required updates.
     - Then move to `Human Review`.
@@ -271,10 +286,11 @@ Use this only when completion is blocked by missing required tools or missing au
 
 1. When the issue is in `Human Review`, treat the PR as the human-facing review layer, but keep polling GitHub checks and review comments.
 2. If there are no new failed checks, requested changes, or actionable comments, do not modify code or ticket content.
-3. If CI fails or review feedback requires changes, move the issue back to `In Progress`, update the workpad with each required fix, address the feedback on the existing branch, rerun validation, push, run the PR feedback sweep again, and return to `Human Review` only when clear.
-4. If approved, human moves the issue to `Merging`.
-5. When the issue is in `Merging`, open and follow `.codex/skills/land/SKILL.md`, then run the `land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
-6. After merge is complete, move the issue to `Done`.
+3. If CI fails, move the issue to `Fixing CI`, update the workpad with each required fix, address the failure on the existing branch, rerun validation, push, run the PR feedback sweep again, and return to `Human Review` only when clear.
+4. If review feedback requires changes, move the issue to `Address Feedback`, update the workpad with each required fix or justified pushback, address it on the existing branch, rerun validation, push, run the PR feedback sweep again, and return to `Human Review` only when clear.
+5. If approved, human moves the issue to `Merging`.
+6. When the issue is in `Merging`, open and follow `.codex/skills/land/SKILL.md`, then run the `land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
+7. After merge is complete, move the issue to `Done`.
 
 ## Step 4: Rework handling
 
@@ -293,7 +309,7 @@ Use this only when completion is blocked by missing required tools or missing au
 - Step 1/2 checklist is fully complete and accurately reflected in the single workpad comment.
 - Acceptance criteria and required ticket-provided validation items are complete.
 - Validation/tests are green for the latest commit.
-- PR feedback sweep is complete and no actionable comments remain.
+- PR has been marked ready after internal agent review, PR feedback sweep is complete, and no actionable comments remain.
 - PR checks are green, branch is pushed, and PR is linked on the issue.
 - Required PR metadata is present (`symphony` label).
 - If app-touching, runtime validation/media requirements from `App runtime validation (required)` are complete.
@@ -313,6 +329,7 @@ Use this only when completion is blocked by missing required tools or missing au
   link to the current issue, and `blockedBy` when the follow-up depends on the
   current issue.
 - Do not move to `Human Review` unless the `Completion bar before Human Review` is satisfied.
+- In `Agent Review`, keep the PR draft and do not request external/human review yet.
 - In `Human Review`, poll PR checks/reviews; make no changes unless CI or review feedback requires an incremental fix.
 - If state is terminal (`Done`), do nothing and shut down.
 - Keep issue text concise, specific, and reviewer-oriented.
